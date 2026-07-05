@@ -1,0 +1,92 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+profile_default/
+
+# --- Node / frontend build ---
+node_modules/
+frontend/dist/
+*.local
+
+# --- OS & editors ---
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+*.sublime-*
+
+# --- Secrets & local config ---
+.env
+.env.*
+!.env.example
+*.pem
+credentials.json
+
+# --- Pipeline & analysis artifacts (regenerated locally) ---
+analysis_outputs/
+uploads/
+temp/
+tmp/
+cache/
+*.log
+
+# --- Local datasets (put slides/masks/annotations here, not in git) ---
+data/
+raw/
+samples/
+
+# --- Images anywhere in the repo (microscopy inputs, masks, etc.) ---
+*.png
+*.jpg
+*.jpeg
+*.tif
+*.tiff
+*.ome.tif
+*.ome.tiff
+*.geojson
+*.npy
+*.npz
+*.bmp
+*.gif
+*.webp
+
+# --- Large binary / model files (anywhere in tree) ---
+*.h5
+*.hdf5
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.pkl
+*.pickle
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# Dropbox conflict copies
+*conflicted copy*
