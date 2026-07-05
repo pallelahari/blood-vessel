@@ -1,0 +1,1309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Vessel Analysis Explorer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --surface2: #21262d; --border: #30363d;
+    --accent: #58a6ff; --accent2: #3fb950; --accent3: #f78166; --accent4: #d2a8ff;
+    --text: #e6edf3; --text-muted: #7d8590; --text-dim: #484f58; --radius: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; min-height: 100vh; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 28px; border-bottom: 1px solid var(--border);
+    background: var(--surface); position: sticky; top: 0; z-index: 100;
+  }
+  .logo { display: flex; align-items: center; gap: 10px; }
+  .logo-icon { width: 32px; height: 32px; background: linear-gradient(135deg, #58a6ff 0%, #3fb950 100%); border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 16px; }
+  .logo-text { font-size: 15px; font-weight: 600; }
+  .logo-sub { font-size: 11px; color: var(--text-muted); }
+  .header-meta { font-size: 12px; color: var(--text-muted); }
+
+  /* ── UPLOAD SCREEN ── */
+  #upload-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: calc(100vh - 61px); padding: 40px 20px; gap: 24px; }
+  .upload-hero { text-align: center; }
+  .upload-hero h1 { font-size: 30px; font-weight: 700; margin-bottom: 8px; background: linear-gradient(90deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .upload-hero p { color: var(--text-muted); font-size: 14px; }
+
+  .upload-options { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; width: 580px; max-width: 100%; }
+  .upload-card {
+    background: var(--surface); border: 2px dashed var(--border); border-radius: 12px;
+    padding: 32px 24px; text-align: center; cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .upload-card:hover, .upload-card.dragover { border-color: var(--accent); background: rgba(88,166,255,0.05); }
+  .upload-card .uc-icon { font-size: 32px; margin-bottom: 10px; }
+  .upload-card h3 { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+  .upload-card p { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+  .uc-btn { display: inline-block; margin-top: 14px; background: var(--accent); color: #0d1117; border: none; padding: 8px 18px; border-radius: 6px; font-weight: 600; font-size: 13px; cursor: pointer; }
+
+  /* ── FOLDER PREVIEW ── */
+  #folder-preview { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; width: 580px; max-width: 100%; padding: 20px; display: none; }
+  .fp-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .fp-title { font-size: 13px; font-weight: 600; }
+  .fp-folder-name { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+  .fp-actions { display: flex; gap: 8px; }
+  .btn-primary { background: var(--accent); color: #0d1117; border: none; padding: 8px 18px; border-radius: 6px; font-weight: 600; font-size: 13px; cursor: pointer; }
+  .btn-secondary { background: transparent; color: var(--text); border: 1px solid var(--border); padding: 7px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+  .btn-secondary:hover { background: var(--surface2); }
+
+  .fp-tree { max-height: 260px; overflow-y: auto; font-size: 12px; }
+  .fp-folder-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; color: var(--text-muted); font-weight: 600; }
+  .fp-file-row { display: flex; align-items: center; gap: 6px; padding: 2px 0 2px 20px; }
+  .fp-file-row.is-csv { color: var(--accent2); }
+  .fp-file-row.is-img { color: var(--accent); }
+  .fp-file-row.is-other { color: var(--text-dim); }
+  .fp-csv-count { background: rgba(63,185,80,0.15); color: var(--accent2); border-radius: 3px; padding: 1px 6px; font-size: 10px; font-weight: 700; margin-left: 4px; }
+  .fp-batch { margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+  .fp-batch:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+  .fp-batch .fp-folder-row { justify-content: space-between; }
+  .fp-batch-remove { background:none; border:none; color:var(--text-dim); cursor:pointer; font-size:14px; padding:0 4px; }
+  .fp-batch-remove:hover { color: var(--accent3); }
+  .fp-add-more { display:flex; gap:8px; margin-top:12px; }
+  .fp-add-more button { flex:1; font-size:12px; padding:8px; }
+
+  /* ── APP LAYOUT ── */
+  #app-screen { display: none; min-height: calc(100vh - 61px); }
+  .app-layout { display: grid; grid-template-columns: 260px 1fr; min-height: calc(100vh - 61px); }
+
+  /* ── SIDEBAR ── */
+  .sidebar { background: var(--surface); border-right: 1px solid var(--border); padding: 20px 16px; overflow-y: auto; position: sticky; top: 61px; height: calc(100vh - 61px); }
+  .sidebar-section { margin-bottom: 22px; }
+  .sidebar-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 10px; }
+  
+  /* Folder tree in sidebar */
+  .folder-tree { font-size: 11px; }
+  .ft-folder { display: flex; align-items: center; gap: 5px; padding: 3px 0; color: var(--text-muted); font-weight: 600; cursor: pointer; }
+  .ft-folder:hover { color: var(--text); }
+  .ft-csv { display: flex; align-items: center; gap: 5px; padding: 3px 0 3px 16px; color: var(--accent2); cursor: pointer; border-radius: 4px; }
+  .ft-csv:hover { background: var(--surface2); }
+  .ft-csv.active { background: rgba(63,185,80,0.1); }
+  .ft-other { padding: 2px 0 2px 16px; color: var(--text-dim); }
+  .ft-img { padding: 2px 0 2px 16px; color: var(--accent); font-size: 10px; }
+
+  .metric-chip-list { display: flex; flex-wrap: wrap; gap: 5px; }
+  .metric-chip { background: var(--surface2); border: 1px solid var(--border); border-radius: 4px; padding: 3px 8px; font-size: 11px; cursor: pointer; transition: background 0.15s, border-color 0.15s; user-select: none; }
+  .metric-chip.selected { background: rgba(88,166,255,0.15); border-color: var(--accent); color: var(--accent); }
+  .metric-chip.zchip.selected { background: rgba(210,168,255,0.15); border-color: var(--accent4); color: var(--accent4); }
+  .metric-chip.none-chip { font-style: italic; color: var(--text-muted); }
+
+  /* info tooltip */
+  .info-dot { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; border-radius:50%; background:var(--surface2); border:1px solid var(--border); color:var(--text-muted); font-size:10px; cursor:help; margin-left:5px; }
+  .info-dot:hover { color:var(--accent); border-color:var(--accent); }
+  .field-row-label { display:flex; align-items:center; font-size:11px; color:var(--text-muted); margin-bottom:6px; }
+
+  /* dataset chips (multi folder / csv comparison) */
+  .dataset-list { display:flex; flex-direction:column; gap:5px; margin-bottom:4px; }
+  .dataset-chip { display:flex; align-items:center; gap:7px; font-size:11px; padding:5px 7px; border-radius:6px; border:1px solid var(--border); background: var(--surface2); cursor:pointer; user-select:none; }
+  .dataset-chip.off { opacity:0.4; }
+  .dataset-dot { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+  .dataset-chip .ds-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dataset-chip .ds-count { color:var(--text-dim); font-size:10px; }
+  .add-dataset-row { display:flex; gap:6px; margin-top:8px; }
+  .add-dataset-row button { flex:1; font-size:11px; padding:7px 4px; }
+
+  /* color-mode select */
+  .select-field { width:100%; background: var(--surface2); border:1px solid var(--border); color:var(--text); padding:7px 8px; border-radius:6px; font-size:12px; margin-bottom:2px; }
+
+  /* range filters */
+  .filter-row { background: var(--surface2); border:1px solid var(--border); border-radius:6px; padding:8px; margin-bottom:8px; }
+  .filter-row-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+  .filter-row-head select { flex:1; background:var(--surface); border:1px solid var(--border); color:var(--text); font-size:11px; padding:4px 6px; border-radius:4px; margin-right:6px; }
+  .filter-remove-btn { background:none; border:none; color:var(--text-dim); cursor:pointer; font-size:14px; padding:0 4px; }
+  .filter-remove-btn:hover { color: var(--accent3); }
+  .filter-range-inputs { display:flex; align-items:center; gap:6px; }
+  .filter-range-inputs input[type=number] { width:0; flex:1; background:var(--surface); border:1px solid var(--border); color:var(--text); font-size:11px; padding:4px 6px; border-radius:4px; }
+  .filter-slider-wrap { margin-top:6px; position:relative; height:18px; }
+  .filter-slider-wrap input[type=range] { position:absolute; top:5px; left:0; width:100%; margin:0; -webkit-appearance:none; appearance:none; background:transparent; pointer-events:none; }
+  .filter-slider-wrap input[type=range]::-webkit-slider-thumb { pointer-events:all; -webkit-appearance:none; appearance:none; width:13px; height:13px; border-radius:50%; background:var(--accent); border:2px solid var(--bg); cursor:pointer; margin-top:-5px; }
+  .filter-slider-wrap input[type=range]::-moz-range-thumb { pointer-events:all; width:13px; height:13px; border-radius:50%; background:var(--accent); border:2px solid var(--bg); cursor:pointer; }
+  .filter-slider-wrap input[type=range]::-webkit-slider-runnable-track { height:3px; background:var(--border); border-radius:2px; }
+  .filter-slider-wrap input[type=range]::-moz-range-track { height:3px; background:var(--border); border-radius:2px; }
+  .filter-count { font-size:10px; color:var(--text-dim); margin-top:4px; }
+  .add-filter-btn { width:100%; padding:8px; background: rgba(210,168,255,0.08); border:1px dashed var(--accent4); border-radius:6px; color:var(--accent4); font-size:12px; font-weight:600; cursor:pointer; }
+  .add-filter-btn:hover { background: rgba(210,168,255,0.16); }
+  .no-filters-hint { font-size:11px; color:var(--text-dim); padding: 2px 0 6px; line-height:1.5; }
+  .chart-type-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .chart-type-btn { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 4px; font-size: 11px; text-align: center; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+  .chart-type-btn.active { border-color: var(--accent); color: var(--accent); }
+  .chart-type-btn .ct-icon { font-size: 16px; display: block; margin-bottom: 3px; }
+  .add-chart-btn { width: 100%; margin-top: 12px; padding: 10px; background: rgba(88,166,255,0.1); border: 1px dashed var(--accent); border-radius: 6px; color: var(--accent); font-size: 13px; font-weight: 600; cursor: pointer; }
+  .add-chart-btn:hover { background: rgba(88,166,255,0.18); }
+
+  /* ── MAIN ── */
+  .main-content { padding: 24px 28px; }
+  .tab-bar { display: flex; gap: 4px; margin-bottom: 24px; border-bottom: 1px solid var(--border); }
+  .tab { padding: 8px 16px; font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; color: var(--text-muted); transition: color 0.15s, border-color 0.15s; }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  .stats-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+  .stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-muted); margin-bottom: 4px; }
+  .stat-value { font-size: 22px; font-weight: 700; }
+
+  /* active source indicator */
+  .source-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+  .source-chip { background: var(--surface2); border: 1px solid var(--border); border-radius: 4px; padding: 4px 10px; font-size: 11px; cursor: pointer; }
+  .source-chip.active { background: rgba(88,166,255,0.15); border-color: var(--accent); color: var(--accent); }
+  .source-label { font-size: 11px; color: var(--text-muted); }
+
+  .charts-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 20px; }
+  .chart-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  .chart-card-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 0; }
+  .chart-card-title { font-size: 13px; font-weight: 600; }
+  .chart-card-meta { font-size: 11px; color: var(--text-muted); }
+  .chart-card-actions { display: flex; gap: 6px; }
+  .chart-card-body { padding: 12px 12px 16px; height: 280px; }
+  .chart-card-body canvas { width: 100% !important; height: 100% !important; }
+  .remove-chart-btn { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 16px; padding: 2px 6px; border-radius: 4px; }
+  .remove-chart-btn:hover { color: var(--accent3); background: rgba(247,129,102,0.1); }
+  .fullscreen-btn { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 14px; padding: 2px 6px; border-radius: 4px; }
+  .fullscreen-btn:hover { color: var(--text); }
+  .no-charts { grid-column: 1/-1; text-align: center; padding: 80px 20px; color: var(--text-muted); }
+  .no-charts .nc-icon { font-size: 48px; margin-bottom: 16px; opacity: 0.4; }
+
+  /* ── PER-CHART RANGE FILTER (appears inside each chart card, after it's built) ── */
+  .chart-card-filters { padding: 4px 14px 14px; border-top: 1px solid var(--border); margin-top: 4px; }
+  .chart-card-filters .ccf-list { margin-top: 8px; }
+  .chart-card-filters .add-filter-btn { margin-top: 4px; font-size: 11px; padding: 6px; }
+  .chart-card-filters .no-filters-hint { margin: 6px 0 0; }
+
+  /* TABLE */
+  .filter-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 20px; }
+  .filter-bar select { background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 6px; font-size: 12px; }
+  .filter-bar input[type=text] { background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 6px; font-size: 12px; flex: 1; min-width: 160px; max-width: 280px; }
+  .filter-bar input[type=text]:focus { outline: none; border-color: var(--accent); }
+  .filter-label { font-size: 11px; color: var(--text-muted); }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { background: var(--surface2); padding: 8px 12px; text-align: left; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: var(--text); }
+  th .sort-arrow { color: var(--accent); margin-left: 3px; }
+  .compare-select-row { display:flex; align-items:center; gap:8px; margin-bottom:16px; }
+  td { padding: 7px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  tr:hover td { background: var(--surface2); }
+
+  /* IMAGES TAB */
+  .images-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; }
+  .image-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; cursor: pointer; }
+  .image-card img { width: 100%; height: 160px; object-fit: cover; display: block; background: var(--surface2); }
+  .image-card-label { padding: 8px 10px; font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* MODAL */
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 200; align-items: center; justify-content: center; }
+  .modal-overlay.open { display: flex; }
+  .modal-box { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; width: 90vw; max-width: 900px; padding: 24px; max-height: 90vh; overflow-y: auto; }
+  .modal-box canvas { width: 100% !important; height: 500px !important; }
+  .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+  .modal-close { background: none; border: none; color: var(--text-muted); font-size: 22px; cursor: pointer; }
+  #img-modal img { max-width: 100%; border-radius: 6px; }
+
+  #toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--surface2); border: 1px solid var(--border); padding: 10px 20px; border-radius: 6px; font-size: 13px; z-index: 9999; display: none; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+  #toast.show { display: block; }
+  #toast.success { border-color: var(--accent2); color: var(--accent2); }
+  #toast.error { border-color: var(--accent3); color: var(--accent3); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">🔬</div>
+    <div>
+      <div class="logo-text">Vessel Explorer</div>
+      <div class="logo-sub">Blood Vessel Analysis Dashboard</div>
+    </div>
+  </div>
+  <div class="header-meta" id="header-info"></div>
+</header>
+
+<!-- ══ UPLOAD SCREEN ══ -->
+<div id="upload-screen">
+  <div class="upload-hero">
+    <h1>Load Your Analysis Results</h1>
+    <p>Upload one or more output folders, or pick individual CSV files — each becomes its own dataset.</p>
+  </div>
+
+  <div class="upload-options">
+    <!-- FOLDER -->
+    <div class="upload-card" id="folder-drop" onclick="document.getElementById('folder-input').click()">
+      <div class="uc-icon">📁</div>
+      <h3>Upload Folder</h3>
+      <p>Select an analysis output folder — CSVs and images load automatically. Click again to queue another folder as a separate dataset.</p>
+      <span class="uc-btn">Choose Folder</span>
+      <input type="file" id="folder-input" webkitdirectory multiple style="display:none" />
+    </div>
+    <!-- FILES -->
+    <div class="upload-card" id="csv-drop" onclick="document.getElementById('csv-input').click()">
+      <div class="uc-icon">📄</div>
+      <h3>Upload CSV Files</h3>
+      <p>Pick one or more <code>blob_metrics.csv</code> files directly without the whole folder.</p>
+      <span class="uc-btn">Choose Files</span>
+      <input type="file" id="csv-input" multiple accept=".csv" style="display:none" />
+    </div>
+  </div>
+
+  <!-- FOLDER PREVIEW / STAGING -->
+  <div id="folder-preview">
+    <div class="fp-header">
+      <div>
+        <div class="fp-title">Queued Datasets</div>
+        <div class="fp-folder-name" id="fp-folder-name"></div>
+      </div>
+      <div class="fp-actions">
+        <button class="btn-secondary" onclick="clearPreview()">✕ Clear All</button>
+        <button class="btn-primary" onclick="loadFromPreview()">Load Data →</button>
+      </div>
+    </div>
+    <div class="fp-tree" id="fp-tree"></div>
+  </div>
+</div>
+
+<!-- ══ APP SCREEN ══ -->
+<div id="app-screen">
+  <div class="app-layout">
+    <aside class="sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-label">Datasets <span class="info-dot" title="Each folder or batch of CSVs you load becomes its own dataset. Toggle a dataset off to hide it everywhere without losing it.">?</span></div>
+        <div class="dataset-list" id="dataset-list"></div>
+        <div class="add-dataset-row">
+          <button class="btn-secondary" onclick="document.getElementById('folder-input-add').click()">＋ Add Folder</button>
+          <button class="btn-secondary" onclick="document.getElementById('csv-input-add').click()">＋ Add CSVs</button>
+        </div>
+        <input type="file" id="folder-input-add" webkitdirectory multiple style="display:none" />
+        <input type="file" id="csv-input-add" multiple accept=".csv" style="display:none" />
+        <div class="folder-tree" id="sidebar-tree" style="margin-top:10px;"></div>
+        <button class="btn-secondary" style="width:100%;margin-top:10px;font-size:12px;" onclick="resetApp()">↩ Start Over</button>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-label">X Axis</div>
+        <div id="x-axis-chips" class="metric-chip-list"></div>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-label">Y Axis <span class="info-dot" title="Optional. Leave unselected for a count-based chart (e.g. how many blobs fall in each X category), or pick one or more metrics to plot/average against X.">?</span></div>
+        <div id="y-axis-chips" class="metric-chip-list"></div>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-label">Z Axis <span class="info-dot" title="Optional. Only used for Scatter charts. Adds a 3rd dimension by sizing each point according to this metric (bigger = higher value), so you can see three variables at once without a true 3D plot.">?</span></div>
+        <div id="z-axis-chips" class="metric-chip-list"></div>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-label">Chart Type</div>
+        <div class="chart-type-grid">
+          <div class="chart-type-btn active" onclick="selectChartType('bar',this)"><span class="ct-icon">📊</span>Bar</div>
+          <div class="chart-type-btn" onclick="selectChartType('scatter',this)"><span class="ct-icon">⬤</span>Scatter</div>
+          <div class="chart-type-btn" onclick="selectChartType('line',this)"><span class="ct-icon">📈</span>Line</div>
+          <div class="chart-type-btn" onclick="selectChartType('histogram',this)"><span class="ct-icon">▦</span>Histogram</div>
+          <div class="chart-type-btn" onclick="selectChartType('pie',this)"><span class="ct-icon">🥧</span>Pie</div>
+          <div class="chart-type-btn" onclick="selectChartType('box',this)"><span class="ct-icon">▭</span>Box Plot</div>
+        </div>
+        <div style="margin-top:10px;">
+          <div class="field-row-label">Color by
+            <span class="info-dot" title="Dataset: colors/groups points by which folder or upload the data came from, so you can compare two datasets side by side. None: a single flat color.">?</span>
+          </div>
+          <select id="color-mode" class="select-field" onchange="setColorMode(this.value)">
+            <option value="dataset">Dataset (folder / upload)</option>
+            <option value="none">None (single color)</option>
+          </select>
+        </div>
+        <button class="add-chart-btn" onclick="addChart()">＋ Add Chart</button>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <div class="tab-bar">
+        <div class="tab active" onclick="switchTab('dashboard',this)">📊 Dashboard</div>
+        <div class="tab" onclick="switchTab('table',this)">📋 Data Table</div>
+        <div class="tab" onclick="switchTab('compare',this)" id="compare-tab" style="display:none">🆚 Compare</div>
+        <div class="tab" onclick="switchTab('images',this)" id="images-tab" style="display:none">🖼 Images</div>
+      </div>
+
+      <div class="tab-content active" id="tab-dashboard">
+        <div class="source-bar" id="source-bar"></div>
+        <div class="stats-row" id="stats-row"></div>
+        <div class="charts-grid" id="charts-grid">
+          <div class="no-charts"><div class="nc-icon">📉</div><p>Pick metrics in the sidebar, then click <strong>Add Chart</strong></p></div>
+        </div>
+      </div>
+
+      <div class="tab-content" id="tab-table">
+        <div class="filter-bar">
+          <input type="text" id="table-search" placeholder="🔍 Search rows…" oninput="onTableSearch(this.value)" />
+          <span class="filter-label">Source:</span>
+          <select id="source-filter" onchange="renderTable()"><option value="">All files</option></select>
+          <span class="filter-label" id="row-count"></span>
+        </div>
+        <div class="table-wrap" id="table-wrap"></div>
+      </div>
+
+      <div class="tab-content" id="tab-compare">
+        <div id="compare-wrap"></div>
+      </div>
+
+      <div class="tab-content" id="tab-images">
+        <div class="images-grid" id="images-grid"></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- Chart modal -->
+<div class="modal-overlay" id="chart-modal">
+  <div class="modal-box">
+    <div class="modal-header">
+      <div id="modal-title" style="font-size:15px;font-weight:600;"></div>
+      <button class="modal-close" onclick="closeModal('chart-modal')">✕</button>
+    </div>
+    <canvas id="modal-canvas"></canvas>
+  </div>
+</div>
+
+<!-- Image modal -->
+<div class="modal-overlay" id="img-modal">
+  <div class="modal-box" style="text-align:center;">
+    <div class="modal-header">
+      <div id="img-modal-title" style="font-size:14px;font-weight:600;"></div>
+      <button class="modal-close" onclick="closeModal('img-modal')">✕</button>
+    </div>
+    <img id="img-modal-img" src="" alt="" />
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ══════════════════════════════════════════
+// STATE
+// ══════════════════════════════════════════
+let allRows = [];
+let activeRows = [];    // filtered rows (source + dataset toggle) used everywhere; per-chart range filters apply on top of this, per chart
+let filesMeta = [];     // [{name, path, rows, folderName, dataset}]
+let imageFiles = [];    // [{name, url, folderName}]
+let folderStructure = {}; // folderName -> {csvs:[], images:[], others:[]}
+let numericCols = [];
+let categoricalCols = [];
+let selectedX = '';
+let selectedY = [];      // optional — leave empty for a count-based chart
+let selectedZ = '';     // optional, scatter only
+let selectedChartType = 'bar';
+let activeSource = '';  // '' = all (per-file filter)
+let colorMode = 'none'; // 'dataset' | 'none'
+let charts = [];         // [{id, instance, title, type, x, ys, z, filters:[{id,col,min,max,dataMin,dataMax}]}]
+let chartCounter = 0;
+let modalChart = null;
+let pendingBatches = [];  // [{id, files:File[], isFolder}] queued on the upload screen before "Load Data →"
+let pendingBatchCounter = 0;
+
+// Data Table search/sort
+let tableSearchQuery = '';
+let tableSortCol = null;
+let tableSortDir = 1;
+
+// Cross-dataset comparison
+let compareStat = 'mean'; // mean|median|min|max|std|count
+
+let datasets = [];      // [{id,name,color,count}] — one per loaded folder/CSV batch
+let datasetCounter = 0;
+let enabledDatasets = new Set(); // dataset ids currently visible
+let filterCounter = 0;  // unique id counter for per-chart range filters
+
+const PALETTE = ['rgba(88,166,255,0.75)','rgba(63,185,80,0.75)','rgba(210,169,34,0.75)','rgba(247,129,102,0.75)','rgba(210,88,255,0.75)'];
+const DATASET_PALETTE = [
+  { bg:'rgba(88,166,255,0.7)',  border:'rgb(88,166,255)'  },
+  { bg:'rgba(247,129,102,0.7)', border:'rgb(247,129,102)' },
+  { bg:'rgba(210,168,255,0.7)', border:'rgb(210,168,255)' },
+  { bg:'rgba(63,185,80,0.7)',   border:'rgb(63,185,80)'   },
+  { bg:'rgba(210,169,34,0.7)',  border:'rgb(210,169,34)'  },
+  { bg:'rgba(255,123,196,0.7)', border:'rgb(255,123,196)' },
+];
+function getDatasetColor(name, alt=false) {
+  const idx = datasets.findIndex(d => d.name === name);
+  const p = DATASET_PALETTE[(idx<0?0:idx) % DATASET_PALETTE.length];
+  return alt ? p.border : p.bg;
+}
+
+// ══════════════════════════════════════════
+// DRAG & DROP on upload cards
+// ══════════════════════════════════════════
+['folder-drop','csv-drop'].forEach(id => {
+  const el = document.getElementById(id);
+  el.addEventListener('dragover', e => { e.preventDefault(); el.classList.add('dragover'); });
+  el.addEventListener('dragleave', () => el.classList.remove('dragover'));
+  el.addEventListener('drop', e => {
+    e.preventDefault(); el.classList.remove('dragover');
+    const files = Array.from(e.dataTransfer.files);
+    if (id === 'csv-drop') {
+      addCsvBatch(files.filter(f => f.name.endsWith('.csv')));
+    } else {
+      addFolderBatch(files);
+    }
+  });
+});
+
+document.getElementById('folder-input').addEventListener('change', function() {
+  addFolderBatch(Array.from(this.files));
+  this.value = '';
+});
+document.getElementById('csv-input').addEventListener('change', function() {
+  addCsvBatch(Array.from(this.files).filter(f => f.name.endsWith('.csv')));
+  this.value = '';
+});
+document.getElementById('folder-input-add').addEventListener('change', function() {
+  processAllFiles(Array.from(this.files), true);
+  this.value = '';
+});
+document.getElementById('csv-input-add').addEventListener('change', function() {
+  processAllFiles(Array.from(this.files).filter(f => f.name.endsWith('.csv')), true);
+  this.value = '';
+});
+
+// ══════════════════════════════════════════
+// UPLOAD SCREEN STAGING — queue multiple folders/CSV sets, each becomes
+// its own dataset once "Load Data →" is clicked.
+// ══════════════════════════════════════════
+function addFolderBatch(files) {
+  if (!files.length) return;
+  const rootName = files[0].webkitRelativePath ? files[0].webkitRelativePath.split('/')[0] : `Folder ${pendingBatches.filter(b=>b.isFolder).length + 1}`;
+  if (!files.some(f => f.name.endsWith('.csv'))) { showToast(`No CSV files found in "${rootName}"`, 'error'); return; }
+  pendingBatches.push({ id: 'pb-'+(++pendingBatchCounter), name: rootName, files, isFolder: true });
+  renderPendingBatches();
+}
+
+function addCsvBatch(files) {
+  if (!files.length) { showToast('No CSV files found', 'error'); return; }
+  const name = `CSV Set ${pendingBatches.filter(b=>!b.isFolder).length + 1}`;
+  pendingBatches.push({ id: 'pb-'+(++pendingBatchCounter), name, files, isFolder: false });
+  renderPendingBatches();
+}
+
+function removeBatch(id) {
+  pendingBatches = pendingBatches.filter(b => b.id !== id);
+  renderPendingBatches();
+}
+
+function renderPendingBatches() {
+  const wrap = document.getElementById('folder-preview');
+  if (!pendingBatches.length) { wrap.style.display = 'none'; document.getElementById('fp-tree').innerHTML=''; return; }
+  wrap.style.display = 'block';
+  const totalCsv = pendingBatches.reduce((s,b) => s + b.files.filter(f=>f.name.endsWith('.csv')).length, 0);
+  document.getElementById('fp-folder-name').textContent = `${pendingBatches.length} dataset${pendingBatches.length>1?'s':''} queued · ${totalCsv} CSV total — click "Choose Folder" again to add more`;
+
+  let html = '';
+  pendingBatches.forEach(b => {
+    const csvs = b.files.filter(f => f.name.endsWith('.csv'));
+    const imgs = b.files.filter(f => /\.(png|jpg|jpeg|bmp|tiff)$/i.test(f.name));
+    const others = b.files.filter(f => !csvs.includes(f) && !imgs.includes(f));
+    html += `<div class="fp-batch">
+      <div class="fp-folder-row">
+        <span>${b.isFolder ? '📂' : '📄'} ${b.name} <span class="fp-csv-count">${csvs.length} CSV</span></span>
+        <button class="fp-batch-remove" onclick="removeBatch('${b.id}')" title="Remove this queued dataset">✕</button>
+      </div>
+      ${csvs.map(n => `<div class="fp-file-row is-csv">✅ ${n.name}</div>`).join('')}
+      ${imgs.map(n => `<div class="fp-file-row is-img">🖼 ${n.name}</div>`).join('')}
+      ${others.map(n => `<div class="fp-file-row is-other">· ${n.name}</div>`).join('')}
+    </div>`;
+  });
+  document.getElementById('fp-tree').innerHTML = html;
+}
+
+function clearPreview() {
+  pendingBatches = [];
+  document.getElementById('folder-preview').style.display = 'none';
+  document.getElementById('fp-tree').innerHTML = '';
+  document.getElementById('folder-input').value = '';
+  document.getElementById('csv-input').value = '';
+}
+
+function loadFromPreview() {
+  if (!pendingBatches.length) return;
+  const batches = pendingBatches.slice();
+  pendingBatches = [];
+  document.getElementById('folder-preview').style.display = 'none';
+  // First batch resets app state (append=false); every subsequent batch is added
+  // as its own dataset alongside it (append=true), reusing the same pipeline
+  // used for "+ Add Folder / + Add CSVs" after the app has already loaded.
+  batches.forEach((b, i) => processAllFiles(b.files, i > 0));
+}
+
+// ══════════════════════════════════════════
+// PROCESS FILES
+// ══════════════════════════════════════════
+function processAllFiles(files, append) {
+  if (!append) { allRows = []; filesMeta = []; imageFiles = []; folderStructure = {}; datasets = []; enabledDatasets = new Set(); datasetCounter = 0; }
+
+  const csvFiles = files.filter(f => f.name.endsWith('.csv'));
+  const imgFiles = files.filter(f => /\.(png|jpg|jpeg|bmp)$/i.test(f.name));
+
+  if (!csvFiles.length) { showToast('No CSV files found', 'error'); return; }
+
+  // Figure out a dataset name for this batch: root folder name if it's a folder upload, else "CSV Set N"
+  const hasFolderPath = !!files[0].webkitRelativePath;
+  const dsName = hasFolderPath ? files[0].webkitRelativePath.split('/')[0] : `CSV Set ${++datasetCounter}`;
+  if (hasFolderPath) datasetCounter++; // keep counter moving regardless of naming scheme
+  const dsId = 'ds-' + Date.now() + '-' + Math.floor(Math.random()*1000);
+  datasets.push({ id: dsId, name: dsName, count: 0 });
+  enabledDatasets.add(dsId);
+
+  // Build image previews
+  imgFiles.forEach(f => {
+    const folder = f.webkitRelativePath ? f.webkitRelativePath.split('/').slice(0,-1).join('/') : '';
+    imageFiles.push({ name: f.name, url: URL.createObjectURL(f), folderName: folder, dataset: dsId });
+  });
+
+  let loaded = 0;
+  csvFiles.forEach(file => {
+    const folder = file.webkitRelativePath ? file.webkitRelativePath.split('/').slice(0,-1).join('/') : '';
+    Papa.parse(file, {
+      header: true, skipEmptyLines: true, dynamicTyping: true,
+      complete(result) {
+        const rows = result.data.map(r => ({ ...r, _source: file.name, _folder: folder, _dataset: dsId, _datasetName: dsName }));
+        allRows = allRows.concat(rows);
+        const ds = datasets.find(d => d.id === dsId); if (ds) ds.count += rows.length;
+        filesMeta.push({ name: file.name, path: file.webkitRelativePath || file.name, rows: rows.length, folderName: folder, dataset: dsId, datasetName: dsName });
+        loaded++;
+        if (loaded === csvFiles.length) { if (append) appendRefresh(); else initApp(); }
+      }
+    });
+  });
+}
+
+// ══════════════════════════════════════════
+// INIT APP
+// ══════════════════════════════════════════
+function initApp() {
+  if (!allRows.length) { showToast('No data in CSV files', 'error'); return; }
+
+  recomputeColumns();
+  activeSource = '';
+  refreshActiveRows();
+
+  selectedX = numericCols.includes('area') ? 'area' : numericCols[0] || '';
+  selectedY = numericCols.includes('circularity') ? ['circularity'] : numericCols.length > 1 ? [numericCols[1]] : [];
+  selectedZ = '';
+  colorMode = datasets.length > 1 ? 'dataset' : 'none';
+  document.getElementById('color-mode').value = colorMode;
+
+  renderSidebar();
+  renderDatasetList();
+  renderSourceBar();
+  renderStats();
+  renderTable();
+  renderImages();
+  document.getElementById('compare-tab').style.display = datasets.length > 1 ? '' : 'none';
+  renderCompare();
+  document.getElementById('upload-screen').style.display = 'none';
+  document.getElementById('folder-preview').style.display = 'none';
+  document.getElementById('app-screen').style.display = 'block';
+  document.getElementById('header-info').textContent = `${allRows.length} blobs · ${filesMeta.length} CSV file(s)`;
+  if (imageFiles.length) document.getElementById('images-tab').style.display = '';
+
+  // Populate source filter dropdown
+  const sf = document.getElementById('source-filter');
+  sf.innerHTML = '<option value="">All files</option>' + filesMeta.map(f => `<option value="${f.name}">${f.name}</option>`).join('');
+
+  // Starter charts
+  addChartWithConfig('histogram', 'area', [], 'Area Distribution');
+  if (numericCols.includes('circularity') && numericCols.includes('area'))
+    addChartWithConfig('scatter', 'area', ['circularity'], 'Area vs Circularity');
+}
+
+// Called when a folder/CSV batch is added AFTER the app is already open —
+// keeps existing charts & filters, just widens the data pool and re-renders.
+function appendRefresh() {
+  recomputeColumns();
+  refreshActiveRows();
+  renderSidebar();
+  renderDatasetList();
+  renderSourceBar();
+  renderStats();
+  renderTable();
+  renderImages();
+  document.getElementById('compare-tab').style.display = datasets.length > 1 ? '' : 'none';
+  renderCompare();
+  document.getElementById('header-info').textContent = `${allRows.length} blobs · ${filesMeta.length} CSV file(s)`;
+  if (imageFiles.length) document.getElementById('images-tab').style.display = '';
+  const sf = document.getElementById('source-filter');
+  sf.innerHTML = '<option value="">All files</option>' + filesMeta.map(f => `<option value="${f.name}">${f.name}</option>`).join('');
+  // Rebuild existing charts against the enlarged dataset
+  rebuildAllCharts();
+  const ds = datasets[datasets.length-1];
+  showToast(`Added "${ds.name}" — ${ds.count} rows. Colored by dataset to compare.`, 'success');
+  if (datasets.length > 1 && colorMode !== 'dataset') { colorMode = 'dataset'; document.getElementById('color-mode').value = 'dataset'; rebuildAllCharts(); }
+}
+
+function recomputeColumns() {
+  const sample = allRows[0];
+  numericCols = Object.keys(sample).filter(k => !k.startsWith('_') && typeof sample[k] === 'number');
+  categoricalCols = Object.keys(sample).filter(k => !k.startsWith('_') && typeof sample[k] === 'string');
+}
+
+// ══════════════════════════════════════════
+// ACTIVE ROWS PIPELINE: source filter → dataset toggle (per-chart range filters apply on top, per chart)
+// ══════════════════════════════════════════
+function refreshActiveRows() {
+  let rows = activeSource ? allRows.filter(r => r._source === activeSource) : allRows.slice();
+  rows = rows.filter(r => enabledDatasets.has(r._dataset));
+  activeRows = rows;
+}
+
+// Rebuilds every chart's data/instance in place (used when the source filter, dataset
+// toggle, or color mode changes) WITHOUT touching each chart card's own range-filter UI.
+function rebuildAllCharts() {
+  charts.forEach(c => rebuildSingleChart(c.id));
+}
+
+// ══════════════════════════════════════════
+// SIDEBAR TREE
+// ══════════════════════════════════════════
+function renderSidebar() {
+  // Group files by folder
+  const byFolder = {};
+  filesMeta.forEach(f => {
+    const fld = f.folderName || '(root)';
+    if (!byFolder[fld]) byFolder[fld] = [];
+    byFolder[fld].push(f);
+  });
+
+  let html = '';
+  Object.entries(byFolder).forEach(([folder, files]) => {
+    html += `<div class="ft-folder">📂 <span title="${folder}">${folder.split('/').pop() || folder}</span></div>`;
+    files.forEach(f => {
+      const active = activeSource === f.name ? ' active' : '';
+      html += `<div class="ft-csv${active}" onclick="setSource('${f.name}')" title="${f.path}">📄 ${f.name} <span style="color:var(--text-dim);font-size:10px;">${f.rows}</span></div>`;
+    });
+    // Images in same folder
+    imageFiles.filter(img => img.folderName === folder).forEach(img => {
+      html += `<div class="ft-img">🖼 ${img.name}</div>`;
+    });
+  });
+
+  document.getElementById('sidebar-tree').innerHTML = html;
+
+  // Chips
+  const allCols = [...categoricalCols, ...numericCols];
+  document.getElementById('x-axis-chips').innerHTML = allCols.map(c =>
+    `<div class="metric-chip ${c===selectedX?'selected':''}" onclick="setX('${c}')">${c}</div>`).join('');
+  document.getElementById('y-axis-chips').innerHTML = numericCols.map(c =>
+    `<div class="metric-chip ${selectedY.includes(c)?'selected':''}" onclick="toggleY('${c}')">${c}</div>`).join('');
+  document.getElementById('z-axis-chips').innerHTML =
+    `<div class="metric-chip zchip none-chip ${selectedZ===''?'selected':''}" onclick="setZ('')">None</div>` +
+    numericCols.map(c => `<div class="metric-chip zchip ${selectedZ===c?'selected':''}" onclick="setZ('${c}')">${c}</div>`).join('');
+}
+
+function setX(col) {
+  selectedX = col;
+  document.querySelectorAll('#x-axis-chips .metric-chip').forEach(el => el.classList.toggle('selected', el.textContent===col));
+}
+function toggleY(col) {
+  selectedY = selectedY.includes(col) ? selectedY.filter(c=>c!==col) : [...selectedY, col];
+  document.querySelectorAll('#y-axis-chips .metric-chip').forEach(el => el.classList.toggle('selected', selectedY.includes(el.textContent)));
+}
+function setZ(col) {
+  selectedZ = col;
+  document.querySelectorAll('#z-axis-chips .metric-chip').forEach(el => el.classList.toggle('selected', (col===''?el.textContent==='None':el.textContent===col)));
+}
+function selectChartType(type, el) {
+  selectedChartType = type;
+  document.querySelectorAll('.chart-type-btn').forEach(b=>b.classList.remove('active'));
+  el.classList.add('active');
+}
+function setColorMode(mode) {
+  colorMode = mode;
+  rebuildAllCharts();
+}
+
+// ══════════════════════════════════════════
+// DATASETS (multi-folder / multi-CSV comparison)
+// ══════════════════════════════════════════
+function renderDatasetList() {
+  const el = document.getElementById('dataset-list');
+  if (!el) return;
+  if (datasets.length <= 1) { el.innerHTML = ''; return; }
+  el.innerHTML = datasets.map(d => {
+    const on = enabledDatasets.has(d.id);
+    return `<div class="dataset-chip ${on?'':'off'}" onclick="toggleDataset('${d.id}')" title="Click to ${on?'hide':'show'} this dataset">
+      <span class="dataset-dot" style="background:${getDatasetColor(d.name,true)}"></span>
+      <span class="ds-name">${d.name}</span>
+      <span class="ds-count">${d.count}</span>
+    </div>`;
+  }).join('');
+}
+
+function toggleDataset(id) {
+  if (enabledDatasets.has(id)) enabledDatasets.delete(id); else enabledDatasets.add(id);
+  refreshActiveRows();
+  renderDatasetList();
+  renderSourceBar();
+  renderStats();
+  renderTable();
+  renderCompare();
+  rebuildAllCharts();
+}
+
+// ══════════════════════════════════════════
+// PER-CHART RANGE FILTERS — appear inside a chart card after it's built,
+// and only restrict that one chart's data (not stats, table, or other charts)
+// ══════════════════════════════════════════
+function addChartFilter(chartId) {
+  const chart = charts.find(c => c.id === chartId); if (!chart) return;
+  if (!numericCols.length) { showToast('No numeric columns to filter', 'error'); return; }
+  const col = numericCols.find(c => !chart.filters.some(f => f.col === c)) || numericCols[0];
+  const vals = allRows.map(r => r[col]).filter(v => typeof v === 'number' && !isNaN(v));
+  const dataMin = vals.length ? Math.min(...vals) : 0;
+  const dataMax = vals.length ? Math.max(...vals) : 1;
+  chart.filters.push({ id: 'rf-'+(++filterCounter), col, min: dataMin, max: dataMax, dataMin, dataMax });
+  renderChartFilters(chartId);
+  rebuildSingleChart(chartId);
+}
+
+function removeChartFilter(chartId, id) {
+  const chart = charts.find(c => c.id === chartId); if (!chart) return;
+  chart.filters = chart.filters.filter(f => f.id !== id);
+  renderChartFilters(chartId);
+  rebuildSingleChart(chartId);
+}
+
+function changeChartFilterCol(chartId, id, col) {
+  const chart = charts.find(c => c.id === chartId); if (!chart) return;
+  const f = chart.filters.find(f => f.id === id); if (!f) return;
+  f.col = col;
+  const vals = allRows.map(r => r[col]).filter(v => typeof v === 'number' && !isNaN(v));
+  f.dataMin = vals.length ? Math.min(...vals) : 0;
+  f.dataMax = vals.length ? Math.max(...vals) : 1;
+  f.min = f.dataMin; f.max = f.dataMax;
+  renderChartFilters(chartId);
+  rebuildSingleChart(chartId);
+}
+
+function updateChartFilter(chartId, id, which, value) {
+  const chart = charts.find(c => c.id === chartId); if (!chart) return;
+  const f = chart.filters.find(f => f.id === id); if (!f) return;
+  value = parseFloat(value);
+  if (which === 'min') f.min = Math.min(value, f.max);
+  else f.max = Math.max(value, f.min);
+  // Update just this row's live inputs/sliders without a full re-render (smoother dragging)
+  const minInp = document.getElementById(`fmin-${chartId}-${id}`), maxInp = document.getElementById(`fmax-${chartId}-${id}`);
+  const minSlider = document.getElementById(`fsmin-${chartId}-${id}`), maxSlider = document.getElementById(`fsmax-${chartId}-${id}`);
+  if (minInp) minInp.value = f.min.toFixed(2); if (maxInp) maxInp.value = f.max.toFixed(2);
+  if (minSlider) minSlider.value = f.min; if (maxSlider) maxSlider.value = f.max;
+  rebuildSingleChart(chartId);
+  const countEl = document.getElementById(`fc-${chartId}-${id}`);
+  if (countEl) { const chart2 = charts.find(c=>c.id===chartId); if (chart2) countEl.textContent = `${chart2.rows.length} of ${allRows.length} rows match`; }
+}
+
+function renderChartFilters(chartId) {
+  const chart = charts.find(c => c.id === chartId); if (!chart) return;
+  const el = document.getElementById('cfilters-'+chartId);
+  const hint = document.getElementById('cfhint-'+chartId);
+  if (!el) return;
+  hint.style.display = chart.filters.length ? 'none' : 'block';
+  el.innerHTML = chart.filters.map(f => `
+    <div class="filter-row">
+      <div class="filter-row-head">
+        <select onchange="changeChartFilterCol('${chartId}','${f.id}', this.value)">
+          ${numericCols.map(c => `<option value="${c}" ${c===f.col?'selected':''}>${c}</option>`).join('')}
+        </select>
+        <button class="filter-remove-btn" onclick="removeChartFilter('${chartId}','${f.id}')" title="Remove filter">✕</button>
+      </div>
+      <div class="filter-range-inputs">
+        <input type="number" id="fmin-${chartId}-${f.id}" value="${f.min.toFixed(2)}" step="any"
+          onchange="updateChartFilter('${chartId}','${f.id}','min',this.value)" />
+        <span style="color:var(--text-dim);font-size:10px;">to</span>
+        <input type="number" id="fmax-${chartId}-${f.id}" value="${f.max.toFixed(2)}" step="any"
+          onchange="updateChartFilter('${chartId}','${f.id}','max',this.value)" />
+      </div>
+      <div class="filter-slider-wrap">
+        <input type="range" id="fsmin-${chartId}-${f.id}" min="${f.dataMin}" max="${f.dataMax}" step="any" value="${f.min}"
+          oninput="updateChartFilter('${chartId}','${f.id}','min',this.value)" />
+        <input type="range" id="fsmax-${chartId}-${f.id}" min="${f.dataMin}" max="${f.dataMax}" step="any" value="${f.max}"
+          oninput="updateChartFilter('${chartId}','${f.id}','max',this.value)" />
+      </div>
+      <div class="filter-count" id="fc-${chartId}-${f.id}">${chart.rows ? chart.rows.length : activeRows.length} of ${allRows.length} rows match</div>
+    </div>
+  `).join('');
+}
+
+// ══════════════════════════════════════════
+// SOURCE FILTER (top of dashboard)
+// ══════════════════════════════════════════
+function renderSourceBar() {
+  const bar = document.getElementById('source-bar');
+  if (filesMeta.length <= 1) { bar.innerHTML = ''; return; }
+  bar.innerHTML = `<span class="source-label">View:</span>
+    <div class="source-chip ${activeSource===''?'active':''}" onclick="setSource('')">All (${allRows.length})</div>` +
+    filesMeta.map(f => `<div class="source-chip ${activeSource===f.name?'active':''}" onclick="setSource('${f.name}')">${f.name} (${f.rows})</div>`).join('');
+}
+
+function setSource(name) {
+  activeSource = name;
+  refreshActiveRows();
+  renderSourceBar();
+  renderSidebar();
+  renderStats();
+  renderTable();
+  rebuildAllCharts();
+}
+
+// ══════════════════════════════════════════
+// STATS
+// ══════════════════════════════════════════
+function renderStats() {
+  const rows = activeRows;
+  const cards = [
+    { label:'Total Blobs', value: rows.length, cls:'' },
+    { label:'Avg Area', value: fmtAvg(rows,'area'), cls:'' },
+    { label:'Avg Circularity', value: fmtAvg(rows,'circularity',3), cls:'' },
+    { label:'Avg Length', value: fmtAvg(rows,'length') || fmtAvg(rows,'skeleton_length'), cls:'' },
+    { label:'Avg Width', value: fmtAvg(rows,'mean_width') || fmtAvg(rows,'width'), cls:'' },
+  ];
+  document.getElementById('stats-row').innerHTML = cards.map(c =>
+    `<div class="stat-card"><div class="stat-label">${c.label}</div><div class="stat-value ${c.cls}">${c.value||'—'}</div></div>`).join('');
+}
+function fmtAvg(rows,col,dec=1) {
+  const vals = rows.map(r=>r[col]).filter(v=>typeof v==='number'&&!isNaN(v));
+  return vals.length ? (vals.reduce((a,b)=>a+b,0)/vals.length).toFixed(dec) : null;
+}
+
+// ══════════════════════════════════════════
+// CROSS-DATASET COMPARISON
+// ══════════════════════════════════════════
+function computeStats(vals) {
+  if (!vals.length) return { mean:null, median:null, min:null, max:null, std:null, count:0 };
+  const sorted = vals.slice().sort((a,b)=>a-b);
+  const mean = vals.reduce((a,b)=>a+b,0) / vals.length;
+  const mid = Math.floor(sorted.length/2);
+  const median = sorted.length % 2 ? sorted[mid] : (sorted[mid-1]+sorted[mid])/2;
+  const variance = vals.reduce((a,b)=>a+(b-mean)**2, 0) / vals.length;
+  return { mean, median, min: sorted[0], max: sorted[sorted.length-1], std: Math.sqrt(variance), count: vals.length };
+}
+
+function fmtStat(v) {
+  if (v === null || v === undefined) return '—';
+  return Number.isInteger(v) ? String(v) : v.toFixed(3);
+}
+
+function setCompareStat(v) {
+  compareStat = v;
+  renderCompare();
+}
+
+function renderCompare() {
+  const wrap = document.getElementById('compare-wrap');
+  if (!wrap) return;
+  const activeDatasets = datasets.filter(d => enabledDatasets.has(d.id));
+  if (!numericCols.length || activeDatasets.length < 2) {
+    wrap.innerHTML = '<p style="color:var(--text-muted);padding:20px;">Load 2 or more datasets (folders / CSV sets) — with all of them enabled in the sidebar — to compare their stats here.</p>';
+    return;
+  }
+  let html = `<div class="compare-select-row">
+    <span class="filter-label">Metric:</span>
+    <select id="compare-stat-select" class="select-field" style="width:auto;" onchange="setCompareStat(this.value)">
+      <option value="mean" ${compareStat==='mean'?'selected':''}>Mean</option>
+      <option value="median" ${compareStat==='median'?'selected':''}>Median</option>
+      <option value="min" ${compareStat==='min'?'selected':''}>Min</option>
+      <option value="max" ${compareStat==='max'?'selected':''}>Max</option>
+      <option value="std" ${compareStat==='std'?'selected':''}>Std Dev</option>
+      <option value="count" ${compareStat==='count'?'selected':''}>Count</option>
+    </select>
+    <span class="filter-label">Comparing ${activeDatasets.length} datasets · toggle datasets in the sidebar to change this</span>
+  </div>`;
+
+  html += `<div class="table-wrap"><table><thead><tr><th>Metric</th>${
+    activeDatasets.map(d => `<th><span class="dataset-dot" style="display:inline-block;background:${getDatasetColor(d.name,true)};margin-right:5px;"></span>${d.name}</th>`).join('')
+  }</tr></thead><tbody>`;
+
+  numericCols.forEach(col => {
+    html += `<tr><td>${col}</td>`;
+    activeDatasets.forEach(d => {
+      const vals = allRows.filter(r => r._dataset === d.id && typeof r[col] === 'number' && !isNaN(r[col])).map(r => r[col]);
+      const s = computeStats(vals);
+      html += `<td>${fmtStat(s[compareStat])}</td>`;
+    });
+    html += `</tr>`;
+  });
+
+  html += `</tbody></table></div>`;
+  wrap.innerHTML = html;
+}
+
+// ══════════════════════════════════════════
+// CHARTS
+// ══════════════════════════════════════════
+function addChart() {
+  if (!selectedX) { showToast('Select an X axis metric','error'); return; }
+  addChartWithConfig(selectedChartType, selectedX, selectedY, buildTitle(selectedChartType, selectedX, selectedY, selectedZ), selectedZ);
+}
+
+function buildTitle(type, x, ys, z) {
+  if (type==='histogram') return `${x} Distribution`;
+  if (type==='pie') return `${x} Breakdown`;
+  if (!ys.length) return type==='scatter' ? `${x} Frequency` : `Count of Blobs by ${x}`;
+  if (type==='scatter') return z ? `${x} vs ${ys.join(', ')} (size = ${z})` : `${x} vs ${ys.join(', ')}`;
+  return `${ys.join(', ')} by ${x}`;
+}
+
+// Creates the chart card's DOM (canvas + its own range-filter section) once,
+// then hands off to rebuildSingleChart() to compute data and draw it.
+function addChartWithConfig(type, x, ys, title, z) {
+  z = z || '';
+  const id = 'chart-'+(++chartCounter);
+  const grid = document.getElementById('charts-grid');
+  const ph = grid.querySelector('.no-charts'); if (ph) ph.remove();
+
+  const card = document.createElement('div');
+  card.className = 'chart-card'; card.id = 'card-'+id;
+  card.innerHTML = `
+    <div class="chart-card-header">
+      <div><div class="chart-card-title">${title}</div><div class="chart-card-meta" id="meta-${id}"></div></div>
+      <div class="chart-card-actions">
+        <button class="fullscreen-btn" onclick="openChartModal('${id}')" title="Expand">⛶</button>
+        <button class="remove-chart-btn" onclick="removeChart('${id}')">✕</button>
+      </div>
+    </div>
+    <div class="chart-card-body"><canvas id="${id}"></canvas></div>
+    <div class="chart-card-filters">
+      <div class="ccf-list" id="cfilters-${id}"></div>
+      <div class="no-filters-hint" id="cfhint-${id}">No range filter on this chart yet.</div>
+      <button class="add-filter-btn" onclick="addChartFilter('${id}')">＋ Add Range Filter</button>
+    </div>`;
+  grid.appendChild(card);
+
+  charts.push({ id, instance: null, config: null, title, type, x, ys, z, filters: [], rows: [] });
+  rebuildSingleChart(id);
+}
+
+// Recomputes one chart's rows (activeRows + that chart's own range filters),
+// rebuilds its Chart.js instance, and refreshes its meta line — used both when
+// the chart's own filters change and when a global setting (source/dataset/color) changes.
+function rebuildSingleChart(id) {
+  const chart = charts.find(c => c.id === id); if (!chart) return;
+  let rows = activeRows;
+  chart.filters.forEach(f => {
+    if (!f.col) return;
+    rows = rows.filter(r => { const v=r[f.col]; return typeof v==='number' && !isNaN(v) && v>=f.min && v<=f.max; });
+  });
+  chart.rows = rows;
+  const cfg = buildChartConfig(chart.type, chart.x, chart.ys, chart.z, rows);
+  chart.config = cfg;
+  if (chart.instance) chart.instance.destroy();
+  chart.instance = new Chart(document.getElementById(id).getContext('2d'), cfg);
+  const meta = document.getElementById('meta-'+id);
+  if (meta) meta.textContent = `${chart.type} · ${rows.length} blobs${activeSource?' · '+activeSource:''}${chart.filters.length?' · filtered':''} · colored by ${colorMode}`;
+}
+
+function buildChartConfig(type, x, ys, z, rows) {
+  rows = rows || activeRows;
+  if (type==='histogram') return buildHistogram(x, rows);
+  if (type==='pie') return buildPie(x, rows);
+  if (type==='scatter') return buildScatter(x, ys[0], z, colorMode, rows);
+  if (type==='bar') return buildBar(x, ys, colorMode, rows);
+  if (type==='line') return buildLine(x, ys, rows);
+  if (type==='box') return buildBox(ys, colorMode, rows);
+  return {};
+}
+
+function buildHistogram(col, rows) {
+  const vals = rows.map(r=>r[col]).filter(v=>typeof v==='number'&&!isNaN(v));
+  if (!vals.length) return emptyConfig();
+  const min=Math.min(...vals),max=Math.max(...vals),bins=12,bsz=(max-min)/bins;
+  const counts=Array(bins).fill(0);
+  vals.forEach(v=>{ counts[Math.min(Math.floor((v-min)/bsz),bins-1)]++; });
+  return { type:'bar', data:{ labels:counts.map((_,i)=>(min+i*bsz).toFixed(1)), datasets:[{ label:col, data:counts, backgroundColor:'rgba(88,166,255,0.6)', borderColor:'rgb(88,166,255)', borderWidth:1 }]}, options:co(col,'Count') };
+}
+
+function buildPie(col, rows) {
+  const groups = rows.reduce((a,r)=>{ const k=String(r[col]||'?'); a[k]=(a[k]||0)+1; return a; },{});
+  const keys=Object.keys(groups);
+  return { type:'pie', data:{ labels:keys, datasets:[{ data:keys.map(k=>groups[k]), backgroundColor:keys.map((_,i)=>PALETTE[i%PALETTE.length]), borderColor:'#161b22', borderWidth:2 }]}, options:{ plugins:{ legend:{ labels:{ color:'#e6edf3', font:{size:11} }}}, maintainAspectRatio:false }};
+}
+
+function buildScatter(xc,yc,zc,colorMode,rows) {
+  // No Y metric picked -> fall back to a frequency scatter: each distinct X value vs how many rows share it
+  if (!yc) {
+    const counts = {};
+    rows.forEach(r=>{ const k=r[xc]; counts[k]=(counts[k]||0)+1; });
+    const pts = Object.entries(counts).map(([k,v])=>({ x:isNaN(parseFloat(k))?k:parseFloat(k), y:v }));
+    return { type:'scatter', data:{ datasets:[{ label:`${xc} frequency`, data:pts, backgroundColor:'rgba(88,166,255,0.6)', borderColor:'rgb(88,166,255)', pointRadius:5, pointHoverRadius:7 }]}, options: co2(xc,'count') };
+  }
+  // Z axis present -> bubble chart, radius encodes the z metric
+  let zMin=0, zMax=1;
+  if (zc) {
+    const zVals = rows.map(r=>r[zc]).filter(v=>typeof v==='number'&&!isNaN(v));
+    zMin = zVals.length?Math.min(...zVals):0; zMax = zVals.length?Math.max(...zVals):1;
+  }
+  const toPt = r => {
+    const p = { x:r[xc], y:r[yc] };
+    if (zc) {
+      const v = r[zc];
+      const norm = (typeof v==='number' && zMax>zMin) ? (v-zMin)/(zMax-zMin) : 0.5;
+      p.r = 4 + norm*14; // 4px..18px
+      p._z = v;
+    }
+    return p;
+  };
+  const chartType = zc ? 'bubble' : 'scatter';
+  const zTooltip = zc ? { callbacks: { label: (ctx)=> `${ctx.dataset.label}: (${ctx.parsed.x}, ${ctx.parsed.y}), ${zc}=${ctx.raw._z}` } } : {};
+
+  let chartDatasets;
+  if (colorMode==='dataset' && datasets_multi(rows)) {
+    const grps={};
+    rows.forEach(r=>{ const d=r._datasetName||'?'; if(!grps[d])grps[d]=[]; grps[d].push(toPt(r)); });
+    chartDatasets = Object.entries(grps).map(([d,pts])=>({ label:d, data:pts, backgroundColor:getDatasetColor(d), borderColor:getDatasetColor(d,true), pointRadius: zc?undefined:3, pointHoverRadius:5 }));
+  } else {
+    chartDatasets = [{ label:`${xc} vs ${yc}`, data:rows.map(toPt), backgroundColor:'rgba(88,166,255,0.5)', borderColor:'rgb(88,166,255)', pointRadius: zc?undefined:3 }];
+  }
+  const opts = co2(xc,yc);
+  opts.plugins = { ...opts.plugins, tooltip: { ...opts.plugins.tooltip, ...zTooltip } };
+  return { type:chartType, data:{ datasets:chartDatasets }, options:opts };
+}
+function datasets_multi(rows) {
+  const names = new Set(rows.map(r=>r._datasetName).filter(Boolean));
+  return names.size > 0;
+}
+
+function buildBar(xc,ys,colorMode,rows) {
+  const isCat = categoricalCols.includes(xc);
+  const multiDs = colorMode==='dataset' && datasets.length>1;
+  const noY = !ys.length;
+
+  if (isCat) {
+    if (multiDs) {
+      // one bar series per dataset, so two folders sit side by side with distinct colors
+      const y = ys[0];
+      const cats = [...new Set(rows.map(r=>String(r[xc]||'?').toLowerCase()))];
+      const dsNames = datasets.filter(d=>enabledDatasets.has(d.id)).map(d=>d.name);
+      const dsSeries = dsNames.map(name => {
+        const sub = rows.filter(r=>r._datasetName===name);
+        if (noY) {
+          const byCat = {};
+          sub.forEach(r=>{ const k=String(r[xc]||'?').toLowerCase(); byCat[k]=(byCat[k]||0)+1; });
+          return { label:name, data:cats.map(c=>byCat[c]||0), backgroundColor:getDatasetColor(name), borderColor:getDatasetColor(name,true), borderWidth:1 };
+        }
+        const byCat = {};
+        sub.forEach(r=>{ const k=String(r[xc]||'?').toLowerCase(); if(!byCat[k])byCat[k]=[]; byCat[k].push(r[y]); });
+        return { label:name, data:cats.map(c=>{ const a=byCat[c]||[]; return a.length?a.reduce((s,v)=>s+v,0)/a.length:0; }), backgroundColor:getDatasetColor(name), borderColor:getDatasetColor(name,true), borderWidth:1 };
+      });
+      return { type:'bar', data:{ labels:cats, datasets:dsSeries }, options:co2(xc, noY?'count':y) };
+    }
+    if (noY) {
+      const counts = {};
+      rows.forEach(r=>{ const k=String(r[xc]||'?').toLowerCase(); counts[k]=(counts[k]||0)+1; });
+      const labels=Object.keys(counts);
+      return { type:'bar', data:{ labels, datasets:[{ label:'count', data:labels.map(l=>counts[l]), backgroundColor:PALETTE[0], borderWidth:1 }]}, options:co2(xc,'count') };
+    }
+    const grps={};
+    rows.forEach(r=>{ const k=String(r[xc]||'?').toLowerCase(); if(!grps[k])grps[k]={}; ys.forEach(y=>{ if(!grps[k][y])grps[k][y]=[]; grps[k][y].push(r[y]); }); });
+    const labels=Object.keys(grps);
+    return { type:'bar', data:{ labels, datasets:ys.map((y,i)=>({ label:y, data:labels.map(l=>{ const a=grps[l][y]||[]; return a.length?a.reduce((s,v)=>s+v,0)/a.length:0; }), backgroundColor:PALETTE[i], borderWidth:1 }))}, options:co2(xc,ys.join(', ')) };
+  }
+
+  const vals=rows.map(r=>r[xc]).filter(v=>typeof v==='number');
+  if (!vals.length) return emptyConfig();
+  const min=Math.min(...vals),max=Math.max(...vals),bins=10,bsz=(max-min)/bins||1;
+
+  if (multiDs) {
+    const y = ys[0];
+    const dsNames = datasets.filter(d=>enabledDatasets.has(d.id)).map(d=>d.name);
+    const labels = Array.from({length:bins},(_,i)=>(min+i*bsz).toFixed(1));
+    const dsSeries = dsNames.map(name => {
+      const sub = rows.filter(r=>r._datasetName===name);
+      if (noY) {
+        const bins_ = Array(bins).fill(0);
+        sub.forEach(r=>{ const v=r[xc]; if(typeof v!=='number')return; bins_[Math.min(Math.floor((v-min)/bsz),bins-1)]++; });
+        return { label:name, data:bins_, backgroundColor:getDatasetColor(name), borderColor:getDatasetColor(name,true), borderWidth:1 };
+      }
+      const bg = Array.from({length:bins},()=>[]);
+      sub.forEach(r=>{ const v=r[xc]; if(typeof v!=='number')return; const i=Math.min(Math.floor((v-min)/bsz),bins-1); if(typeof r[y]==='number') bg[i].push(r[y]); });
+      return { label:name, data:bg.map(a=>a.length?a.reduce((s,v)=>s+v,0)/a.length:0), backgroundColor:getDatasetColor(name), borderColor:getDatasetColor(name,true), borderWidth:1 };
+    });
+    return { type:'bar', data:{ labels, datasets:dsSeries }, options:co2(xc,noY?'count':y) };
+  }
+
+  if (noY) {
+    const counts = Array(bins).fill(0);
+    rows.forEach(r=>{ const v=r[xc]; if(typeof v!=='number')return; counts[Math.min(Math.floor((v-min)/bsz),bins-1)]++; });
+    return { type:'bar', data:{ labels:counts.map((_,i)=>(min+i*bsz).toFixed(1)), datasets:[{ label:'count', data:counts, backgroundColor:PALETTE[0], borderWidth:1 }]}, options:co2(xc,'count') };
+  }
+  const bg=Array.from({length:bins},()=>({}));
+  rows.forEach(r=>{ const v=r[xc]; if(typeof v!=='number')return; const i=Math.min(Math.floor((v-min)/bsz),bins-1); ys.forEach(y=>{ if(!bg[i][y])bg[i][y]=[]; bg[i][y].push(r[y]); }); });
+  return { type:'bar', data:{ labels:bg.map((_,i)=>(min+i*bsz).toFixed(1)), datasets:ys.map((y,i)=>({ label:y, data:bg.map(b=>{ const a=b[y]||[]; return a.length?a.reduce((s,v)=>s+v,0)/a.length:0; }), backgroundColor:PALETTE[i], borderWidth:1 }))}, options:co2(xc,ys.join(', ')) };
+}
+
+function buildLine(xc,ys,rows) {
+  const sorted=[...rows].sort((a,b)=>a[xc]-b[xc]);
+  if (!ys.length) {
+    // No Y metric -> plot count of rows sharing each X value, in X order
+    const counts = {};
+    sorted.forEach(r=>{ const k=r[xc]; counts[k]=(counts[k]||0)+1; });
+    const labels = Object.keys(counts);
+    return { type:'line', data:{ labels, datasets:[{ label:'count', data:labels.map(l=>counts[l]), borderColor:PALETTE[0].replace('0.75','1'), backgroundColor:PALETTE[0].replace('0.75','0.1'), pointRadius:2, tension:0.3, fill:true }]}, options:co2(xc,'count') };
+  }
+  return { type:'line', data:{ labels:sorted.map(r=>typeof r[xc]==='number'?r[xc].toFixed(2):r[xc]), datasets:ys.map((y,i)=>({ label:y, data:sorted.map(r=>r[y]), borderColor:PALETTE[i].replace('0.75','1'), backgroundColor:PALETTE[i].replace('0.75','0.1'), pointRadius:2, tension:0.3, fill:true }))}, options:co2(xc,ys.join(', ')) };
+}
+
+function buildBox(ys,colorMode,rows) {
+  const byDataset = colorMode==='dataset' && datasets.length>1;
+  const groupField = byDataset ? '_datasetName' : (categoricalCols[0] || '_source');
+  const colorFor = (l,i) => byDataset ? getDatasetColor(l) : PALETTE[i];
+  if (!ys.length) {
+    // No Y metric -> just show counts per group
+    const counts={};
+    rows.forEach(r=>{ const raw=r[groupField]; const k=byDataset?String(raw||'?'):String(raw||'?').toLowerCase(); counts[k]=(counts[k]||0)+1; });
+    const labels=Object.keys(counts);
+    return { type:'bar', data:{ labels, datasets:[{ label:'count', data:labels.map(l=>counts[l]), backgroundColor:labels.map((l,i)=>colorFor(l,i)), borderWidth:1 }]}, options:co2(groupField,'count') };
+  }
+  const grps={};
+  rows.forEach(r=>{ const raw = r[groupField]; const k = byDataset ? String(raw||'?') : String(raw||'?').toLowerCase(); if(!grps[k])grps[k]={}; ys.forEach(y=>{ if(!grps[k][y])grps[k][y]=[]; if(typeof r[y]==='number')grps[k][y].push(r[y]); }); });
+  const labels=Object.keys(grps);
+  return { type:'bar', data:{ labels, datasets:ys.map((y,i)=>({ label:y, data:labels.map(l=>{ const a=(grps[l][y]||[]).sort((a,b)=>a-b); return a.length?a[Math.floor(a.length/2)]:0; }), backgroundColor:labels.map(l=>colorFor(l,i)), borderWidth:1 }))}, options:co2(groupField||'group',ys.join(', ')+(ys.length?' (median)':'')) };
+}
+
+function emptyConfig() { return { type:'bar', data:{ labels:[], datasets:[] }, options:{ maintainAspectRatio:false } }; }
+
+function co(xLabel, yLabel) {
+  return { responsive:true, maintainAspectRatio:false,
+    plugins:{ legend:{ labels:{ color:'#e6edf3', font:{size:11}, boxWidth:12 }}, tooltip:{ backgroundColor:'#21262d', titleColor:'#e6edf3', bodyColor:'#7d8590', borderColor:'#30363d', borderWidth:1 }},
+    scales:{ x:{ ticks:{ color:'#7d8590', font:{size:10}, maxRotation:45 }, grid:{ color:'#21262d' }, title:{ display:!!xLabel, text:xLabel, color:'#7d8590', font:{size:11} }}, y:{ ticks:{ color:'#7d8590', font:{size:10} }, grid:{ color:'#21262d' }, title:{ display:!!yLabel, text:yLabel, color:'#7d8590', font:{size:11} }}}};
+}
+function co2(x,y) { return co(x,y); }
+
+function removeChart(id) {
+  const e=charts.find(c=>c.id===id); if(e){ if(e.instance) e.instance.destroy(); charts=charts.filter(c=>c.id!==id); }
+  const card=document.getElementById('card-'+id); if(card) card.remove();
+  if (!charts.length) document.getElementById('charts-grid').innerHTML='<div class="no-charts"><div class="nc-icon">📉</div><p>Pick metrics in the sidebar, then click <strong>Add Chart</strong></p></div>';
+}
+
+function openChartModal(id) {
+  const e=charts.find(c=>c.id===id); if(!e) return;
+  document.getElementById('modal-title').textContent=e.title;
+  document.getElementById('chart-modal').classList.add('open');
+  if(modalChart){modalChart.destroy();modalChart=null;}
+  modalChart=new Chart(document.getElementById('modal-canvas').getContext('2d'), JSON.parse(JSON.stringify(e.config)));
+}
+
+
+// ══════════════════════════════════════════
+// TABLE
+// ══════════════════════════════════════════
+function renderTable() {
+  const sf=document.getElementById('source-filter').value;
+  let rows=activeRows;
+  if(sf) rows=rows.filter(r=>r._source===sf);
+  const totalBeforeSearch = rows.length;
+
+  if (tableSearchQuery.trim()) {
+    const q = tableSearchQuery.trim().toLowerCase();
+    rows = rows.filter(r => Object.keys(r).some(k => {
+      const v = r[k];
+      return v !== null && v !== undefined && String(v).toLowerCase().includes(q);
+    }));
+  }
+
+  document.getElementById('row-count').textContent = tableSearchQuery.trim()
+    ? `${rows.length} of ${totalBeforeSearch} blobs (filtered)`
+    : `${rows.length} blobs`;
+
+  if(!rows.length){ document.getElementById('table-wrap').innerHTML='<p style="color:var(--text-muted);padding:20px;">No rows.</p>'; return; }
+  const cols=Object.keys(rows[0]).filter(c=>!c.startsWith('_'));
+
+  if (tableSortCol && cols.includes(tableSortCol)) {
+    rows = rows.slice().sort((a,b) => {
+      const av = a[tableSortCol], bv = b[tableSortCol];
+      if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * tableSortDir;
+      return String(av ?? '').localeCompare(String(bv ?? '')) * tableSortDir;
+    });
+  }
+
+  const thead = cols.map(c => {
+    const arrow = tableSortCol === c ? `<span class="sort-arrow">${tableSortDir===1?'▲':'▼'}</span>` : '';
+    return `<th class="sortable" onclick="sortTableBy('${c}')">${c}${arrow}</th>`;
+  }).join('');
+
+  document.getElementById('table-wrap').innerHTML=`<table><thead><tr>${thead}</tr></thead><tbody>${rows.slice(0,300).map(r=>`<tr>${cols.map(c=>{
+    const v=r[c]; return `<td>${typeof v==='number'?v.toFixed(v%1?3:0):(v||'')}</td>`;
+  }).join('')}</tr>`).join('')}</tbody></table>${rows.length>300?`<p style="color:var(--text-muted);font-size:12px;padding:8px 0;">Showing 300 of ${rows.length}</p>`:''}`;
+}
+
+function onTableSearch(v) {
+  tableSearchQuery = v;
+  renderTable();
+}
+
+function sortTableBy(col) {
+  if (tableSortCol === col) tableSortDir *= -1;
+  else { tableSortCol = col; tableSortDir = 1; }
+  renderTable();
+}
+
+// ══════════════════════════════════════════
+// IMAGES
+// ══════════════════════════════════════════
+function renderImages() {
+  if (!imageFiles.length) return;
+  document.getElementById('images-grid').innerHTML = imageFiles.map((img,i) =>
+    `<div class="image-card" onclick="openImgModal(${i})">
+      <img src="${img.url}" alt="${img.name}" loading="lazy" />
+      <div class="image-card-label">${img.name}</div>
+    </div>`).join('');
+}
+
+function openImgModal(i) {
+  const img=imageFiles[i];
+  document.getElementById('img-modal-title').textContent=img.name;
+  document.getElementById('img-modal-img').src=img.url;
+  document.getElementById('img-modal').classList.add('open');
+}
+
+// ══════════════════════════════════════════
+// TABS / MODAL / UTILS
+// ══════════════════════════════════════════
+function switchTab(name,el) {
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('tab-'+name).classList.add('active');
+}
+
+function closeModal(id) {
+  document.getElementById(id).classList.remove('open');
+  if(id==='chart-modal'&&modalChart){modalChart.destroy();modalChart=null;}
+}
+document.querySelectorAll('.modal-overlay').forEach(m=>m.addEventListener('click',function(e){if(e.target===this)closeModal(this.id);}));
+
+function resetApp() {
+  charts.forEach(c=>c.instance.destroy()); charts=[]; chartCounter=0;
+  allRows=[]; activeRows=[]; filesMeta=[]; imageFiles=[];
+  imageFiles.forEach(img=>URL.revokeObjectURL(img.url));
+  datasets=[]; enabledDatasets=new Set(); datasetCounter=0;
+  filterCounter=0;
+  colorMode='none'; selectedZ=''; activeSource='';
+  tableSearchQuery=''; tableSortCol=null; tableSortDir=1; compareStat='mean';
+  document.getElementById('charts-grid').innerHTML='';
+  document.getElementById('app-screen').style.display='none';
+  document.getElementById('upload-screen').style.display='flex';
+  document.getElementById('folder-preview').style.display='none';
+  document.getElementById('header-info').textContent='';
+  document.getElementById('folder-input').value='';
+  document.getElementById('csv-input').value='';
+  document.getElementById('compare-tab').style.display='none';
+  pendingBatches=[];
+}
+
+function showToast(msg,type='success') {
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.className=`show ${type}`;
+  setTimeout(()=>t.className='',3000);
+}
+</script>
+</body>
+</html>
