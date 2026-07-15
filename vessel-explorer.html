@@ -130,6 +130,10 @@
   .add-filter-btn { width:100%; padding:8px; background: rgba(210,168,255,0.08); border:1px dashed var(--accent4); border-radius:6px; color:var(--accent4); font-size:12px; font-weight:600; cursor:pointer; }
   .add-filter-btn:hover { background: rgba(210,168,255,0.16); }
   .no-filters-hint { font-size:11px; color:var(--text-dim); padding: 2px 0 6px; line-height:1.5; }
+  .add-filter-select { width:100%; background: var(--surface2); border:1px dashed var(--accent4); color:var(--accent4); font-size:12px; font-weight:600; padding:8px; border-radius:6px; cursor:pointer; margin-bottom:6px; }
+  .plain-range { width:100%; accent-color: var(--accent); }
+  .compare-pct-input { width:55px; background:var(--surface2); border:1px solid var(--border); color:var(--text); padding:5px 6px; border-radius:4px; font-size:12px; }
+  .z-legend { display:none; }
   .chart-type-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
   .chart-type-btn { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 4px; font-size: 11px; text-align: center; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
   .chart-type-btn.active { border-color: var(--accent); color: var(--accent); }
@@ -309,12 +313,25 @@
         </div>
         <div style="margin-top:10px;">
           <div class="field-row-label">Color by
-            <span class="info-dot" title="Dataset: colors/groups points by which folder or upload the data came from, so you can compare two datasets side by side. None: a single flat color.">?</span>
+            <span class="info-dot" title="Dataset: colors/groups points by which folder or upload the data came from. None: a single flat color. Z-Axis Gradient: colors scatter points along a blue→yellow→red gradient based on the Z metric's value. Morphology: colors/groups by whatever shape column is present in your data (e.g. elongated/intermediate/compact, or a 0/1 elongated/round flag) — every distinct value gets its own color.">?</span>
           </div>
           <select id="color-mode" class="select-field" onchange="setColorMode(this.value)">
             <option value="dataset">Dataset (folder / upload)</option>
             <option value="none">None (single color)</option>
+            <option value="zvalue">Z-Axis Gradient (scatter)</option>
+            <option value="morphology">Morphology (shape category)</option>
           </select>
+        </div>
+        <div id="morphology-info-box" style="display:none; margin-top:10px; padding:9px 10px; background:#161b22; border:1px solid #30363d; border-radius:6px; font-size:11.5px; line-height:1.5; color:#7d8590;">
+          <div style="color:#e6edf3; font-weight:600; margin-bottom:4px;">How morphology is categorized</div>
+          <div id="morphology-info-body">These labels come straight from the <code id="morphology-col-name">–</code> column in your CSV — this tool doesn't compute them. Typically such labels are assigned upstream from a shape metric like the major/minor axis ratio or circularity: high aspect‑ratio, thin blobs are called <b>elongated</b>, near‑circular blobs are called <b>compact</b>/<b>round</b>, and everything between is <b>intermediate</b>. Check your data‑generation pipeline for the exact thresholds used.</div>
+          <div id="morphology-counts" style="margin-top:6px; display:flex; flex-wrap:wrap; gap:6px;"></div>
+        </div>
+        <div style="margin-top:10px;">
+          <div class="field-row-label">Fill Opacity
+            <span class="info-dot" title="Lower the opacity so overlapping colors from two or more datasets/files stay visible instead of one hiding the other.">?</span>
+          </div>
+          <input type="range" id="opacity-slider" class="plain-range" min="0.1" max="1" step="0.05" value="0.55" oninput="setOpacity(this.value)" />
         </div>
         <button class="add-chart-btn" onclick="addChart()">＋ Add Chart</button>
       </div>
@@ -397,8 +414,10 @@ let selectedY = [];      // optional — leave empty for a count-based chart
 let selectedZ = '';     // optional, scatter only
 let selectedChartType = 'bar';
 let activeSource = '';  // '' = all (per-file filter)
-let colorMode = 'none'; // 'dataset' | 'none'
-let charts = [];         // [{id, instance, title, type, x, ys, z, filters:[{id,col,min,max,dataMin,dataMax}]}]
+let colorMode = 'none'; // 'dataset' | 'none' | 'zvalue' | 'morphology'
+let morphologyCol = ''; // auto-detected column like "elongated" / "morphology" (0/1)
+let chartOpacity = 0.55; // global fill opacity, adjustable via slider
+let charts = [];         // [{id, instance, title, type, x, ys, z, normalize, logScale, logAxis, filters:[{id,col,min,max,dataMin,dataMax}]}]
 let chartCounter = 0;
 let modalChart = null;
 let pendingBatches = [];  // [{id, files:File[], isFolder}] queued on the upload screen before "Load Data →"
@@ -410,26 +429,148 @@ let tableSortCol = null;
 let tableSortDir = 1;
 
 // Cross-dataset comparison
-let compareStat = 'mean'; // mean|median|min|max|std|count
+let compareStat = 'mean'; // mean|median|min|max|std|count|percentile
+let comparePLow = 25;
+let comparePHigh = 75;
 
 let datasets = [];      // [{id,name,color,count}] — one per loaded folder/CSV batch
 let datasetCounter = 0;
 let enabledDatasets = new Set(); // dataset ids currently visible
 let filterCounter = 0;  // unique id counter for per-chart range filters
 
-const PALETTE = ['rgba(88,166,255,0.75)','rgba(63,185,80,0.75)','rgba(210,169,34,0.75)','rgba(247,129,102,0.75)','rgba(210,88,255,0.75)'];
-const DATASET_PALETTE = [
-  { bg:'rgba(88,166,255,0.7)',  border:'rgb(88,166,255)'  },
-  { bg:'rgba(247,129,102,0.7)', border:'rgb(247,129,102)' },
-  { bg:'rgba(210,168,255,0.7)', border:'rgb(210,168,255)' },
-  { bg:'rgba(63,185,80,0.7)',   border:'rgb(63,185,80)'   },
-  { bg:'rgba(210,169,34,0.7)',  border:'rgb(210,169,34)'  },
-  { bg:'rgba(255,123,196,0.7)', border:'rgb(255,123,196)' },
+const PALETTE_RGB = [[88,166,255],[63,185,80],[210,169,34],[247,129,102],[210,88,255]];
+function paletteColor(i, alpha) {
+  const [r,g,b] = PALETTE_RGB[((i%PALETTE_RGB.length)+PALETTE_RGB.length)%PALETTE_RGB.length];
+  return `rgba(${r},${g},${b},${alpha ?? chartOpacity})`;
+}
+const DATASET_PALETTE_RGB = [
+  [88,166,255], [247,129,102], [210,168,255], [63,185,80], [210,169,34], [255,123,196],
 ];
-function getDatasetColor(name, alt=false) {
+function getDatasetColor(name, alt=false, alpha) {
   const idx = datasets.findIndex(d => d.name === name);
-  const p = DATASET_PALETTE[(idx<0?0:idx) % DATASET_PALETTE.length];
-  return alt ? p.border : p.bg;
+  const [r,g,b] = DATASET_PALETTE_RGB[(idx<0?0:idx) % DATASET_PALETTE_RGB.length];
+  return `rgba(${r},${g},${b},${alt ? 1 : (alpha ?? chartOpacity)})`;
+}
+// Morphology coloring — handles both the numeric 0/1 (round/elongated) convention
+// and named shape categories (e.g. "elongated" / "intermediate" / "compact").
+// Any value not in the known keyword map still gets its own distinct, stable color
+// instead of silently falling back to one shared grey (which was the bug: every
+// category rendered identically because only '0'/'1' had entries).
+const MORPH_KEYWORD_COLORS = {
+  '0': [88,166,255],   'round':    [88,166,255],   'compact':      [88,166,255],
+  '1': [247,129,102],  'elongated':[247,129,102],
+  'intermediate': [210,169,34],
+};
+let morphColorCache = {};
+let morphColorNextIdx = 0;
+function morphologyColor(val, alt=false, alpha) {
+  const key = String(val).trim().toLowerCase();
+  let rgb = MORPH_KEYWORD_COLORS[key];
+  if (!rgb) {
+    if (!(key in morphColorCache)) {
+      morphColorCache[key] = PALETTE_RGB[(morphColorNextIdx + 2) % PALETTE_RGB.length];
+      morphColorNextIdx++;
+    }
+    rgb = morphColorCache[key];
+  }
+  const [r,g,b] = rgb;
+  return `rgba(${r},${g},${b},${alt ? 1 : (alpha ?? chartOpacity)})`;
+}
+function morphologyLabel(val) {
+  const v = String(val).trim();
+  const key = v.toLowerCase();
+  if (key === '1') return 'Elongated (1)';
+  if (key === '0') return 'Round (0)';
+  if (!v) return '?';
+  return v.charAt(0).toUpperCase() + v.slice(1); // "elongated" -> "Elongated"
+}
+// Blue → yellow → red heat gradient for continuous Z-value coloring
+function valueToGradientColor(v, min, max, alpha) {
+  let t = (typeof v==='number' && max>min) ? (v-min)/(max-min) : 0.5;
+  t = Math.max(0, Math.min(1, t));
+  let r,g,b;
+  if (t < 0.5) {
+    const k = t/0.5;
+    r = Math.round(30 + k*(255-30)); g = Math.round(100 + k*(215-100)); b = Math.round(255 - k*(255-40));
+  } else {
+    const k = (t-0.5)/0.5;
+    r = 255; g = Math.round(215 - k*(215-60)); b = Math.round(40 - k*40);
+  }
+  return `rgba(${r},${g},${b},${alpha ?? chartOpacity})`;
+}
+// Generic grouping used by chart builders so "color by" works the same way
+// for dataset comparison and for the morphology (elongated/round) column.
+function getGroupField() {
+  if (colorMode === 'dataset') return '_datasetName';
+  if (colorMode === 'morphology' && morphologyCol) return morphologyCol;
+  return null;
+}
+function getGroupColor(groupField, val, alt) {
+  if (groupField === '_datasetName') return getDatasetColor(val, alt);
+  if (groupField === morphologyCol) return morphologyColor(val, alt);
+  return alt ? paletteColor(0,1) : paletteColor(0);
+}
+function getGroupLabel(groupField, val) {
+  if (groupField === morphologyCol) return morphologyLabel(val);
+  return String(val);
+}
+function detectMorphologyCol() {
+  const all = [...categoricalCols, ...numericCols];
+  return all.find(c => /elong/i.test(c) || /morpholog/i.test(c)) || '';
+}
+function setOpacity(v) {
+  chartOpacity = parseFloat(v);
+  rebuildAllCharts();
+}
+// Normalize the numeric columns used by a chart across the rows it will plot
+function normalizeRows(rows, cols, mode) {
+  if (!mode || mode === 'none' || !cols.length) return rows;
+  const stats = {};
+  cols.forEach(c => {
+    const vals = rows.map(r=>r[c]).filter(v=>typeof v==='number'&&!isNaN(v));
+    if (!vals.length) return;
+    const min=Math.min(...vals), max=Math.max(...vals);
+    const mean=vals.reduce((a,b)=>a+b,0)/vals.length;
+    const variance=vals.reduce((a,b)=>a+(b-mean)**2,0)/vals.length;
+    stats[c] = { min, max, mean, std: Math.sqrt(variance) || 1 };
+  });
+  return rows.map(r => {
+    const nr = { ...r };
+    cols.forEach(c => {
+      const v = r[c]; const s = stats[c];
+      if (typeof v!=='number' || isNaN(v) || !s) return;
+      nr[c] = mode==='minmax' ? (s.max>s.min ? (v-s.min)/(s.max-s.min) : 0) : (v-s.mean)/(s.std || 1);
+    });
+    return nr;
+  });
+}
+function applyChartScale(opts, chart) {
+  if (!opts || !opts.scales || !chart || !chart.logScale) return opts;
+  const axis = chart.logAxis === 'x' ? 'x' : 'y';
+  if (opts.scales[axis]) opts.scales[axis] = { ...opts.scales[axis], type: 'logarithmic' };
+  return opts;
+}
+function percentile(vals, p) {
+  if (!vals.length) return null;
+  const sorted = vals.slice().sort((a,b)=>a-b);
+  const idx = (p/100) * (sorted.length-1);
+  const lo = Math.floor(idx), hi = Math.ceil(idx);
+  if (lo === hi) return sorted[lo];
+  return sorted[lo] + (sorted[hi]-sorted[lo]) * (idx-lo);
+}
+function renderZLegend(chartId, cfg) {
+  const el = document.getElementById('zlegend-'+chartId);
+  if (!el) return;
+  if (cfg && cfg._zLegend) {
+    const { col, min, max } = cfg._zLegend;
+    el.style.display = 'flex'; el.style.alignItems = 'center'; el.style.padding = '0 14px 10px';
+    el.innerHTML = `<span style="font-size:10px;color:var(--text-dim);">${min.toFixed(2)}</span>
+      <div style="flex:1;height:8px;border-radius:4px;margin:0 8px;background:linear-gradient(90deg, rgba(30,100,255,1), rgba(255,215,40,1), rgba(255,60,0,1));"></div>
+      <span style="font-size:10px;color:var(--text-dim);">${max.toFixed(2)}</span>
+      <span style="font-size:10px;color:var(--text-muted);margin-left:8px;">${col}</span>`;
+  } else {
+    el.style.display = 'none'; el.innerHTML = '';
+  }
 }
 
 // ══════════════════════════════════════════
@@ -645,6 +786,7 @@ function recomputeColumns() {
   const sample = allRows[0];
   numericCols = Object.keys(sample).filter(k => !k.startsWith('_') && typeof sample[k] === 'number');
   categoricalCols = Object.keys(sample).filter(k => !k.startsWith('_') && typeof sample[k] === 'string');
+  morphologyCol = detectMorphologyCol();
 }
 
 // ══════════════════════════════════════════
@@ -660,6 +802,7 @@ function refreshActiveRows() {
 // toggle, or color mode changes) WITHOUT touching each chart card's own range-filter UI.
 function rebuildAllCharts() {
   charts.forEach(c => rebuildSingleChart(c.id));
+  updateMorphologyInfoBox();
 }
 
 // ══════════════════════════════════════════
@@ -705,7 +848,9 @@ function setX(col) {
   document.querySelectorAll('#x-axis-chips .metric-chip').forEach(el => el.classList.toggle('selected', el.textContent===col));
 }
 function toggleY(col) {
-  selectedY = selectedY.includes(col) ? selectedY.filter(c=>c!==col) : [...selectedY, col];
+  // Single-select, but stays optional: clicking the already-selected metric clears it (no Y axis),
+  // clicking a different one replaces the previous selection instead of stacking on top of it.
+  selectedY = selectedY.includes(col) ? [] : [col];
   document.querySelectorAll('#y-axis-chips .metric-chip').forEach(el => el.classList.toggle('selected', selectedY.includes(el.textContent)));
 }
 function setZ(col) {
@@ -719,7 +864,30 @@ function selectChartType(type, el) {
 }
 function setColorMode(mode) {
   colorMode = mode;
+  updateMorphologyInfoBox();
   rebuildAllCharts();
+}
+// Shows/populates the "how morphology is categorized" box: which column was
+// detected, and a colored swatch + count for every distinct value found —
+// so the legend colors are backed by an actual explanation of what they mean.
+function updateMorphologyInfoBox() {
+  const box = document.getElementById('morphology-info-box');
+  if (!box) return;
+  if (colorMode !== 'morphology' || !morphologyCol) { box.style.display = 'none'; return; }
+  box.style.display = 'block';
+  const nameEl = document.getElementById('morphology-col-name');
+  if (nameEl) nameEl.textContent = morphologyCol;
+  const counts = {};
+  activeRows.forEach(r => { const k = String(r[morphologyCol] ?? '?'); counts[k] = (counts[k]||0) + 1; });
+  const countsEl = document.getElementById('morphology-counts');
+  if (countsEl) {
+    countsEl.innerHTML = Object.keys(counts).map(k => `
+      <span style="display:inline-flex; align-items:center; gap:5px; background:#0d1117; border:1px solid #30363d; border-radius:4px; padding:3px 7px;">
+        <span style="width:9px; height:9px; border-radius:50%; background:${morphologyColor(k,true)}; display:inline-block;"></span>
+        <span style="color:#e6edf3;">${morphologyLabel(k)}</span>
+        <span style="color:#7d8590;">${counts[k]}</span>
+      </span>`).join('');
+  }
 }
 
 // ══════════════════════════════════════════
@@ -801,12 +969,44 @@ function updateChartFilter(chartId, id, which, value) {
   if (countEl) { const chart2 = charts.find(c=>c.id===chartId); if (chart2) countEl.textContent = `${chart2.rows.length} of ${allRows.length} rows match`; }
 }
 
+function onAddControl(chartId, kind) {
+  if (!kind) return;
+  if (kind === 'range') addChartFilter(chartId);
+  if (kind === 'normalize') { const c = charts.find(x=>x.id===chartId); if (c) { c.showNorm = true; renderChartFilters(chartId); } }
+  if (kind === 'scale') { const c = charts.find(x=>x.id===chartId); if (c) { c.showScale = true; renderChartFilters(chartId); } }
+}
+function setChartNormalize(chartId, v) {
+  const c = charts.find(x=>x.id===chartId); if (!c) return;
+  c.normalize = v; rebuildSingleChart(chartId);
+}
+function removeChartNormalize(chartId) {
+  const c = charts.find(x=>x.id===chartId); if (!c) return;
+  c.normalize = 'none'; c.showNorm = false;
+  renderChartFilters(chartId); rebuildSingleChart(chartId);
+}
+function setChartLogAxis(chartId, v) {
+  const c = charts.find(x=>x.id===chartId); if (!c) return;
+  c.logAxis = v; rebuildSingleChart(chartId);
+}
+function setChartLogScale(chartId, v) {
+  const c = charts.find(x=>x.id===chartId); if (!c) return;
+  c.logScale = (v === 'log'); rebuildSingleChart(chartId);
+}
+function removeChartScale(chartId) {
+  const c = charts.find(x=>x.id===chartId); if (!c) return;
+  c.logScale = false; c.showScale = false;
+  renderChartFilters(chartId); rebuildSingleChart(chartId);
+}
+
 function renderChartFilters(chartId) {
   const chart = charts.find(c => c.id === chartId); if (!chart) return;
   const el = document.getElementById('cfilters-'+chartId);
+  const normEl = document.getElementById('cnorm-'+chartId);
+  const scaleEl = document.getElementById('cscale-'+chartId);
   const hint = document.getElementById('cfhint-'+chartId);
   if (!el) return;
-  hint.style.display = chart.filters.length ? 'none' : 'block';
+  const anyControls = chart.filters.length || chart.showNorm || chart.showScale;
+  hint.style.display = anyControls ? 'none' : 'block';
   el.innerHTML = chart.filters.map(f => `
     <div class="filter-row">
       <div class="filter-row-head">
@@ -831,6 +1031,34 @@ function renderChartFilters(chartId) {
       <div class="filter-count" id="fc-${chartId}-${f.id}">${chart.rows ? chart.rows.length : activeRows.length} of ${allRows.length} rows match</div>
     </div>
   `).join('');
+
+  normEl.innerHTML = chart.showNorm ? `
+    <div class="filter-row">
+      <div class="filter-row-head">
+        <select onchange="setChartNormalize('${chartId}', this.value)">
+          <option value="none" ${chart.normalize==='none'?'selected':''}>None</option>
+          <option value="minmax" ${chart.normalize==='minmax'?'selected':''}>Min-Max (0–1)</option>
+          <option value="zscore" ${chart.normalize==='zscore'?'selected':''}>Z-score</option>
+        </select>
+        <button class="filter-remove-btn" onclick="removeChartNormalize('${chartId}')" title="Remove">✕</button>
+      </div>
+      <div style="font-size:10px;color:var(--text-dim);">Rescales the numeric values plotted on this chart before drawing it.</div>
+    </div>` : '';
+
+  scaleEl.innerHTML = chart.showScale ? `
+    <div class="filter-row">
+      <div class="filter-row-head">
+        <select onchange="setChartLogAxis('${chartId}', this.value)">
+          <option value="y" ${chart.logAxis!=='x'?'selected':''}>Y Axis</option>
+          <option value="x" ${chart.logAxis==='x'?'selected':''}>X Axis</option>
+        </select>
+        <select onchange="setChartLogScale('${chartId}', this.value)">
+          <option value="linear" ${!chart.logScale?'selected':''}>Linear</option>
+          <option value="log" ${chart.logScale?'selected':''}>Logarithmic</option>
+        </select>
+        <button class="filter-remove-btn" onclick="removeChartScale('${chartId}')" title="Remove">✕</button>
+      </div>
+    </div>` : '';
 }
 
 // ══════════════════════════════════════════
@@ -896,6 +1124,11 @@ function setCompareStat(v) {
   compareStat = v;
   renderCompare();
 }
+function setComparePercentile(which, v) {
+  v = Math.max(0, Math.min(100, parseFloat(v) || 0));
+  if (which === 'low') comparePLow = v; else comparePHigh = v;
+  renderCompare();
+}
 
 function renderCompare() {
   const wrap = document.getElementById('compare-wrap');
@@ -905,6 +1138,7 @@ function renderCompare() {
     wrap.innerHTML = '<p style="color:var(--text-muted);padding:20px;">Load 2 or more datasets (folders / CSV sets) — with all of them enabled in the sidebar — to compare their stats here.</p>';
     return;
   }
+  const isPct = compareStat === 'percentile';
   let html = `<div class="compare-select-row">
     <span class="filter-label">Metric:</span>
     <select id="compare-stat-select" class="select-field" style="width:auto;" onchange="setCompareStat(this.value)">
@@ -914,7 +1148,14 @@ function renderCompare() {
       <option value="max" ${compareStat==='max'?'selected':''}>Max</option>
       <option value="std" ${compareStat==='std'?'selected':''}>Std Dev</option>
       <option value="count" ${compareStat==='count'?'selected':''}>Count</option>
+      <option value="percentile" ${isPct?'selected':''}>Percentile range</option>
     </select>
+    ${isPct ? `
+      <span class="filter-label">Low %:</span>
+      <input type="number" class="compare-pct-input" min="0" max="100" value="${comparePLow}" onchange="setComparePercentile('low',this.value)" />
+      <span class="filter-label">High %:</span>
+      <input type="number" class="compare-pct-input" min="0" max="100" value="${comparePHigh}" onchange="setComparePercentile('high',this.value)" />
+    ` : ''}
     <span class="filter-label">Comparing ${activeDatasets.length} datasets · toggle datasets in the sidebar to change this</span>
   </div>`;
 
@@ -926,8 +1167,13 @@ function renderCompare() {
     html += `<tr><td>${col}</td>`;
     activeDatasets.forEach(d => {
       const vals = allRows.filter(r => r._dataset === d.id && typeof r[col] === 'number' && !isNaN(r[col])).map(r => r[col]);
-      const s = computeStats(vals);
-      html += `<td>${fmtStat(s[compareStat])}</td>`;
+      if (isPct) {
+        const lo = percentile(vals, comparePLow), hi = percentile(vals, comparePHigh);
+        html += `<td>${fmtStat(lo)} – ${fmtStat(hi)}</td>`;
+      } else {
+        const s = computeStats(vals);
+        html += `<td>${fmtStat(s[compareStat])}</td>`;
+      }
     });
     html += `</tr>`;
   });
@@ -971,14 +1217,23 @@ function addChartWithConfig(type, x, ys, title, z) {
       </div>
     </div>
     <div class="chart-card-body"><canvas id="${id}"></canvas></div>
+    <div class="z-legend" id="zlegend-${id}"></div>
     <div class="chart-card-filters">
+      <select class="add-filter-select" onchange="onAddControl('${id}', this.value); this.value='';">
+        <option value="">＋ Add Filter…</option>
+        <option value="range">Range</option>
+        <option value="normalize">Normalization</option>
+        <option value="scale">Linear / Log Scale</option>
+      </select>
       <div class="ccf-list" id="cfilters-${id}"></div>
-      <div class="no-filters-hint" id="cfhint-${id}">No range filter on this chart yet.</div>
-      <button class="add-filter-btn" onclick="addChartFilter('${id}')">＋ Add Range Filter</button>
+      <div id="cnorm-${id}"></div>
+      <div id="cscale-${id}"></div>
+      <div class="no-filters-hint" id="cfhint-${id}">No filters on this chart yet.</div>
     </div>`;
   grid.appendChild(card);
 
-  charts.push({ id, instance: null, config: null, title, type, x, ys, z, filters: [], rows: [] });
+  charts.push({ id, instance: null, config: null, title, type, x, ys, z, filters: [],
+    normalize: 'none', showNorm: false, logScale: false, logAxis: 'y', showScale: false, rows: [] });
   rebuildSingleChart(id);
 }
 
@@ -992,8 +1247,17 @@ function rebuildSingleChart(id) {
     if (!f.col) return;
     rows = rows.filter(r => { const v=r[f.col]; return typeof v==='number' && !isNaN(v) && v>=f.min && v<=f.max; });
   });
+  if (chart.normalize && chart.normalize !== 'none') {
+    const normCols = new Set();
+    if (numericCols.includes(chart.x)) normCols.add(chart.x);
+    (chart.ys || []).forEach(y => normCols.add(y));
+    if (chart.z) normCols.add(chart.z);
+    rows = normalizeRows(rows, [...normCols], chart.normalize);
+  }
   chart.rows = rows;
   const cfg = buildChartConfig(chart.type, chart.x, chart.ys, chart.z, rows);
+  applyChartScale(cfg.options, chart);
+  renderZLegend(id, cfg);
   chart.config = cfg;
   if (chart.instance) chart.instance.destroy();
   chart.instance = new Chart(document.getElementById(id).getContext('2d'), cfg);
@@ -1015,16 +1279,38 @@ function buildChartConfig(type, x, ys, z, rows) {
 function buildHistogram(col, rows) {
   const vals = rows.map(r=>r[col]).filter(v=>typeof v==='number'&&!isNaN(v));
   if (!vals.length) return emptyConfig();
-  const min=Math.min(...vals),max=Math.max(...vals),bins=12,bsz=(max-min)/bins;
+  const min=Math.min(...vals),max=Math.max(...vals),bins=12,bsz=(max-min)/bins || 1;
+  const groupField = getGroupField();
+  if (groupField) {
+    const groupCounts = {};
+    rows.forEach(r=>{
+      const v=r[col]; if (typeof v!=='number' || isNaN(v)) return;
+      const g = String(r[groupField] ?? '?');
+      if (!groupCounts[g]) groupCounts[g] = Array(bins).fill(0);
+      groupCounts[g][Math.min(Math.floor((v-min)/bsz),bins-1)]++;
+    });
+    const groupKeys = Object.keys(groupCounts);
+    if (groupKeys.length > 1) {
+      const labels = Array.from({length:bins},(_,i)=>(min+i*bsz).toFixed(1));
+      // grouped:false layers each dataset's bars at the same x position (instead of side-by-side),
+      // so with the opacity slider turned down you can see every file's distribution at once.
+      const dsets = groupKeys.map(g => ({
+        label: getGroupLabel(groupField,g), data: groupCounts[g],
+        backgroundColor: getGroupColor(groupField,g), borderColor: getGroupColor(groupField,g,true),
+        borderWidth: 1, grouped: false
+      }));
+      return { type:'bar', data:{ labels, datasets:dsets }, options: co(col,'Count') };
+    }
+  }
   const counts=Array(bins).fill(0);
   vals.forEach(v=>{ counts[Math.min(Math.floor((v-min)/bsz),bins-1)]++; });
-  return { type:'bar', data:{ labels:counts.map((_,i)=>(min+i*bsz).toFixed(1)), datasets:[{ label:col, data:counts, backgroundColor:'rgba(88,166,255,0.6)', borderColor:'rgb(88,166,255)', borderWidth:1 }]}, options:co(col,'Count') };
+  return { type:'bar', data:{ labels:counts.map((_,i)=>(min+i*bsz).toFixed(1)), datasets:[{ label:col, data:counts, backgroundColor:paletteColor(0), borderColor:paletteColor(0,1), borderWidth:1 }]}, options:co(col,'Count') };
 }
 
 function buildPie(col, rows) {
   const groups = rows.reduce((a,r)=>{ const k=String(r[col]||'?'); a[k]=(a[k]||0)+1; return a; },{});
   const keys=Object.keys(groups);
-  return { type:'pie', data:{ labels:keys, datasets:[{ data:keys.map(k=>groups[k]), backgroundColor:keys.map((_,i)=>PALETTE[i%PALETTE.length]), borderColor:'#161b22', borderWidth:2 }]}, options:{ plugins:{ legend:{ labels:{ color:'#e6edf3', font:{size:11} }}}, maintainAspectRatio:false }};
+  return { type:'pie', data:{ labels:keys, datasets:[{ data:keys.map(k=>groups[k]), backgroundColor:keys.map((_,i)=>paletteColor(i,0.85)), borderColor:'#161b22', borderWidth:2 }]}, options:{ plugins:{ legend:{ labels:{ color:'#e6edf3', font:{size:11} }}}, maintainAspectRatio:false }};
 }
 
 function buildScatter(xc,yc,zc,colorMode,rows) {
@@ -1033,7 +1319,7 @@ function buildScatter(xc,yc,zc,colorMode,rows) {
     const counts = {};
     rows.forEach(r=>{ const k=r[xc]; counts[k]=(counts[k]||0)+1; });
     const pts = Object.entries(counts).map(([k,v])=>({ x:isNaN(parseFloat(k))?k:parseFloat(k), y:v }));
-    return { type:'scatter', data:{ datasets:[{ label:`${xc} frequency`, data:pts, backgroundColor:'rgba(88,166,255,0.6)', borderColor:'rgb(88,166,255)', pointRadius:5, pointHoverRadius:7 }]}, options: co2(xc,'count') };
+    return { type:'scatter', data:{ datasets:[{ label:`${xc} frequency`, data:pts, backgroundColor:paletteColor(0), borderColor:paletteColor(0,1), pointRadius:5, pointHoverRadius:7 }]}, options: co2(xc,'count') };
   }
   // Z axis present -> bubble chart, radius encodes the z metric
   let zMin=0, zMax=1;
@@ -1051,92 +1337,106 @@ function buildScatter(xc,yc,zc,colorMode,rows) {
     }
     return p;
   };
-  const chartType = zc ? 'bubble' : 'scatter';
+  // Z is encoded either by point radius (bubble chart) or by a color gradient, never both.
+  const zByColor = colorMode==='zvalue' && zc;
+  const chartType = (zc && !zByColor) ? 'bubble' : 'scatter';
   const zTooltip = zc ? { callbacks: { label: (ctx)=> `${ctx.dataset.label}: (${ctx.parsed.x}, ${ctx.parsed.y}), ${zc}=${ctx.raw._z}` } } : {};
 
   let chartDatasets;
-  if (colorMode==='dataset' && datasets_multi(rows)) {
+  let zLegend = null;
+  const groupField = getGroupField();
+  if (zByColor) {
+    // Color each individual point along a gradient by its Z value, rather than grouping into series.
+    // Radius stays fixed here since Z is already encoded via color - encoding it twice (size + color) is redundant.
+    const pts = rows.map(r => ({ x:r[xc], y:r[yc], _z:r[zc] }));
+    const bgColors = rows.map(r => valueToGradientColor(r[zc], zMin, zMax));
+    chartDatasets = [{ label:`${xc} vs ${yc}`, data:pts, backgroundColor:bgColors, borderColor:bgColors, pointRadius: 5, pointHoverRadius:7 }];
+    zLegend = { col:zc, min:zMin, max:zMax };
+  } else if (groupField) {
     const grps={};
-    rows.forEach(r=>{ const d=r._datasetName||'?'; if(!grps[d])grps[d]=[]; grps[d].push(toPt(r)); });
-    chartDatasets = Object.entries(grps).map(([d,pts])=>({ label:d, data:pts, backgroundColor:getDatasetColor(d), borderColor:getDatasetColor(d,true), pointRadius: zc?undefined:3, pointHoverRadius:5 }));
+    rows.forEach(r=>{ const g=String(r[groupField] ?? '?'); if(!grps[g])grps[g]=[]; grps[g].push(toPt(r)); });
+    const groupKeys = Object.keys(grps);
+    if (groupKeys.length > 1) {
+      chartDatasets = groupKeys.map(g=>({ label:getGroupLabel(groupField,g), data:grps[g], backgroundColor:getGroupColor(groupField,g), borderColor:getGroupColor(groupField,g), borderWidth:1, pointRadius: zc?undefined:3, pointHoverRadius:5 }));
+    } else {
+      chartDatasets = [{ label:`${xc} vs ${yc}`, data:rows.map(toPt), backgroundColor:paletteColor(0), borderColor:paletteColor(0), borderWidth:1, pointRadius: zc?undefined:3 }];
+    }
   } else {
-    chartDatasets = [{ label:`${xc} vs ${yc}`, data:rows.map(toPt), backgroundColor:'rgba(88,166,255,0.5)', borderColor:'rgb(88,166,255)', pointRadius: zc?undefined:3 }];
+    chartDatasets = [{ label:`${xc} vs ${yc}`, data:rows.map(toPt), backgroundColor:paletteColor(0), borderColor:paletteColor(0), borderWidth:1, pointRadius: zc?undefined:3 }];
   }
   const opts = co2(xc,yc);
   opts.plugins = { ...opts.plugins, tooltip: { ...opts.plugins.tooltip, ...zTooltip } };
-  return { type:chartType, data:{ datasets:chartDatasets }, options:opts };
-}
-function datasets_multi(rows) {
-  const names = new Set(rows.map(r=>r._datasetName).filter(Boolean));
-  return names.size > 0;
+  const cfg = { type:chartType, data:{ datasets:chartDatasets }, options:opts };
+  if (zLegend) cfg._zLegend = zLegend;
+  return cfg;
 }
 
 function buildBar(xc,ys,colorMode,rows) {
   const isCat = categoricalCols.includes(xc);
-  const multiDs = colorMode==='dataset' && datasets.length>1;
+  const groupField = getGroupField();
+  const groupKeys = groupField ? [...new Set(rows.map(r=>String(r[groupField] ?? '?')))] : [];
+  const multiGroup = groupField && groupKeys.length>1;
   const noY = !ys.length;
 
   if (isCat) {
-    if (multiDs) {
-      // one bar series per dataset, so two folders sit side by side with distinct colors
+    if (multiGroup) {
+      // one bar series per dataset/morphology group, so two groups sit side by side with distinct colors
       const y = ys[0];
       const cats = [...new Set(rows.map(r=>String(r[xc]||'?').toLowerCase()))];
-      const dsNames = datasets.filter(d=>enabledDatasets.has(d.id)).map(d=>d.name);
-      const dsSeries = dsNames.map(name => {
-        const sub = rows.filter(r=>r._datasetName===name);
+      const series = groupKeys.map(g => {
+        const sub = rows.filter(r=>String(r[groupField] ?? '?')===g);
         if (noY) {
           const byCat = {};
           sub.forEach(r=>{ const k=String(r[xc]||'?').toLowerCase(); byCat[k]=(byCat[k]||0)+1; });
-          return { label:name, data:cats.map(c=>byCat[c]||0), backgroundColor:getDatasetColor(name), borderColor:getDatasetColor(name,true), borderWidth:1 };
+          return { label:getGroupLabel(groupField,g), data:cats.map(c=>byCat[c]||0), backgroundColor:getGroupColor(groupField,g), borderColor:getGroupColor(groupField,g,true), borderWidth:1 };
         }
         const byCat = {};
         sub.forEach(r=>{ const k=String(r[xc]||'?').toLowerCase(); if(!byCat[k])byCat[k]=[]; byCat[k].push(r[y]); });
-        return { label:name, data:cats.map(c=>{ const a=byCat[c]||[]; return a.length?a.reduce((s,v)=>s+v,0)/a.length:0; }), backgroundColor:getDatasetColor(name), borderColor:getDatasetColor(name,true), borderWidth:1 };
+        return { label:getGroupLabel(groupField,g), data:cats.map(c=>{ const a=byCat[c]||[]; return a.length?a.reduce((s,v)=>s+v,0)/a.length:0; }), backgroundColor:getGroupColor(groupField,g), borderColor:getGroupColor(groupField,g,true), borderWidth:1 };
       });
-      return { type:'bar', data:{ labels:cats, datasets:dsSeries }, options:co2(xc, noY?'count':y) };
+      return { type:'bar', data:{ labels:cats, datasets:series }, options:co2(xc, noY?'count':y) };
     }
     if (noY) {
       const counts = {};
       rows.forEach(r=>{ const k=String(r[xc]||'?').toLowerCase(); counts[k]=(counts[k]||0)+1; });
       const labels=Object.keys(counts);
-      return { type:'bar', data:{ labels, datasets:[{ label:'count', data:labels.map(l=>counts[l]), backgroundColor:PALETTE[0], borderWidth:1 }]}, options:co2(xc,'count') };
+      return { type:'bar', data:{ labels, datasets:[{ label:'count', data:labels.map(l=>counts[l]), backgroundColor:paletteColor(0), borderWidth:1 }]}, options:co2(xc,'count') };
     }
     const grps={};
     rows.forEach(r=>{ const k=String(r[xc]||'?').toLowerCase(); if(!grps[k])grps[k]={}; ys.forEach(y=>{ if(!grps[k][y])grps[k][y]=[]; grps[k][y].push(r[y]); }); });
     const labels=Object.keys(grps);
-    return { type:'bar', data:{ labels, datasets:ys.map((y,i)=>({ label:y, data:labels.map(l=>{ const a=grps[l][y]||[]; return a.length?a.reduce((s,v)=>s+v,0)/a.length:0; }), backgroundColor:PALETTE[i], borderWidth:1 }))}, options:co2(xc,ys.join(', ')) };
+    return { type:'bar', data:{ labels, datasets:ys.map((y,i)=>({ label:y, data:labels.map(l=>{ const a=grps[l][y]||[]; return a.length?a.reduce((s,v)=>s+v,0)/a.length:0; }), backgroundColor:paletteColor(i), borderWidth:1 }))}, options:co2(xc,ys.join(', ')) };
   }
 
   const vals=rows.map(r=>r[xc]).filter(v=>typeof v==='number');
   if (!vals.length) return emptyConfig();
   const min=Math.min(...vals),max=Math.max(...vals),bins=10,bsz=(max-min)/bins||1;
 
-  if (multiDs) {
+  if (multiGroup) {
     const y = ys[0];
-    const dsNames = datasets.filter(d=>enabledDatasets.has(d.id)).map(d=>d.name);
     const labels = Array.from({length:bins},(_,i)=>(min+i*bsz).toFixed(1));
-    const dsSeries = dsNames.map(name => {
-      const sub = rows.filter(r=>r._datasetName===name);
+    const series = groupKeys.map(g => {
+      const sub = rows.filter(r=>String(r[groupField] ?? '?')===g);
       if (noY) {
         const bins_ = Array(bins).fill(0);
         sub.forEach(r=>{ const v=r[xc]; if(typeof v!=='number')return; bins_[Math.min(Math.floor((v-min)/bsz),bins-1)]++; });
-        return { label:name, data:bins_, backgroundColor:getDatasetColor(name), borderColor:getDatasetColor(name,true), borderWidth:1 };
+        return { label:getGroupLabel(groupField,g), data:bins_, backgroundColor:getGroupColor(groupField,g), borderColor:getGroupColor(groupField,g,true), borderWidth:1, grouped:false };
       }
       const bg = Array.from({length:bins},()=>[]);
       sub.forEach(r=>{ const v=r[xc]; if(typeof v!=='number')return; const i=Math.min(Math.floor((v-min)/bsz),bins-1); if(typeof r[y]==='number') bg[i].push(r[y]); });
-      return { label:name, data:bg.map(a=>a.length?a.reduce((s,v)=>s+v,0)/a.length:0), backgroundColor:getDatasetColor(name), borderColor:getDatasetColor(name,true), borderWidth:1 };
+      return { label:getGroupLabel(groupField,g), data:bg.map(a=>a.length?a.reduce((s,v)=>s+v,0)/a.length:0), backgroundColor:getGroupColor(groupField,g), borderColor:getGroupColor(groupField,g,true), borderWidth:1, grouped:false };
     });
-    return { type:'bar', data:{ labels, datasets:dsSeries }, options:co2(xc,noY?'count':y) };
+    return { type:'bar', data:{ labels, datasets:series }, options:co2(xc,noY?'count':y) };
   }
 
   if (noY) {
     const counts = Array(bins).fill(0);
     rows.forEach(r=>{ const v=r[xc]; if(typeof v!=='number')return; counts[Math.min(Math.floor((v-min)/bsz),bins-1)]++; });
-    return { type:'bar', data:{ labels:counts.map((_,i)=>(min+i*bsz).toFixed(1)), datasets:[{ label:'count', data:counts, backgroundColor:PALETTE[0], borderWidth:1 }]}, options:co2(xc,'count') };
+    return { type:'bar', data:{ labels:counts.map((_,i)=>(min+i*bsz).toFixed(1)), datasets:[{ label:'count', data:counts, backgroundColor:paletteColor(0), borderWidth:1 }]}, options:co2(xc,'count') };
   }
   const bg=Array.from({length:bins},()=>({}));
   rows.forEach(r=>{ const v=r[xc]; if(typeof v!=='number')return; const i=Math.min(Math.floor((v-min)/bsz),bins-1); ys.forEach(y=>{ if(!bg[i][y])bg[i][y]=[]; bg[i][y].push(r[y]); }); });
-  return { type:'bar', data:{ labels:bg.map((_,i)=>(min+i*bsz).toFixed(1)), datasets:ys.map((y,i)=>({ label:y, data:bg.map(b=>{ const a=b[y]||[]; return a.length?a.reduce((s,v)=>s+v,0)/a.length:0; }), backgroundColor:PALETTE[i], borderWidth:1 }))}, options:co2(xc,ys.join(', ')) };
+  return { type:'bar', data:{ labels:bg.map((_,i)=>(min+i*bsz).toFixed(1)), datasets:ys.map((y,i)=>({ label:y, data:bg.map(b=>{ const a=b[y]||[]; return a.length?a.reduce((s,v)=>s+v,0)/a.length:0; }), backgroundColor:paletteColor(i), borderWidth:1 }))}, options:co2(xc,ys.join(', ')) };
 }
 
 function buildLine(xc,ys,rows) {
@@ -1146,26 +1446,27 @@ function buildLine(xc,ys,rows) {
     const counts = {};
     sorted.forEach(r=>{ const k=r[xc]; counts[k]=(counts[k]||0)+1; });
     const labels = Object.keys(counts);
-    return { type:'line', data:{ labels, datasets:[{ label:'count', data:labels.map(l=>counts[l]), borderColor:PALETTE[0].replace('0.75','1'), backgroundColor:PALETTE[0].replace('0.75','0.1'), pointRadius:2, tension:0.3, fill:true }]}, options:co2(xc,'count') };
+    return { type:'line', data:{ labels, datasets:[{ label:'count', data:labels.map(l=>counts[l]), borderColor:paletteColor(0,1), backgroundColor:paletteColor(0,0.15), pointRadius:2, tension:0.3, fill:true }]}, options:co2(xc,'count') };
   }
-  return { type:'line', data:{ labels:sorted.map(r=>typeof r[xc]==='number'?r[xc].toFixed(2):r[xc]), datasets:ys.map((y,i)=>({ label:y, data:sorted.map(r=>r[y]), borderColor:PALETTE[i].replace('0.75','1'), backgroundColor:PALETTE[i].replace('0.75','0.1'), pointRadius:2, tension:0.3, fill:true }))}, options:co2(xc,ys.join(', ')) };
+  return { type:'line', data:{ labels:sorted.map(r=>typeof r[xc]==='number'?r[xc].toFixed(2):r[xc]), datasets:ys.map((y,i)=>({ label:y, data:sorted.map(r=>r[y]), borderColor:paletteColor(i,1), backgroundColor:paletteColor(i,0.15), pointRadius:2, tension:0.3, fill:true }))}, options:co2(xc,ys.join(', ')) };
 }
 
 function buildBox(ys,colorMode,rows) {
-  const byDataset = colorMode==='dataset' && datasets.length>1;
-  const groupField = byDataset ? '_datasetName' : (categoricalCols[0] || '_source');
-  const colorFor = (l,i) => byDataset ? getDatasetColor(l) : PALETTE[i];
+  const dynGroupField = getGroupField();
+  const groupField = dynGroupField || (categoricalCols[0] || '_source');
+  const colorFor = (l,i) => dynGroupField ? getGroupColor(dynGroupField,l) : paletteColor(i);
+  const labelFor = (l) => dynGroupField ? getGroupLabel(dynGroupField,l) : l;
   if (!ys.length) {
     // No Y metric -> just show counts per group
     const counts={};
-    rows.forEach(r=>{ const raw=r[groupField]; const k=byDataset?String(raw||'?'):String(raw||'?').toLowerCase(); counts[k]=(counts[k]||0)+1; });
-    const labels=Object.keys(counts);
-    return { type:'bar', data:{ labels, datasets:[{ label:'count', data:labels.map(l=>counts[l]), backgroundColor:labels.map((l,i)=>colorFor(l,i)), borderWidth:1 }]}, options:co2(groupField,'count') };
+    rows.forEach(r=>{ const raw=r[groupField]; const k=dynGroupField?String(raw??'?'):String(raw||'?').toLowerCase(); counts[k]=(counts[k]||0)+1; });
+    const keys=Object.keys(counts);
+    return { type:'bar', data:{ labels:keys.map(labelFor), datasets:[{ label:'count', data:keys.map(l=>counts[l]), backgroundColor:keys.map((l,i)=>colorFor(l,i)), borderWidth:1 }]}, options:co2(groupField,'count') };
   }
   const grps={};
-  rows.forEach(r=>{ const raw = r[groupField]; const k = byDataset ? String(raw||'?') : String(raw||'?').toLowerCase(); if(!grps[k])grps[k]={}; ys.forEach(y=>{ if(!grps[k][y])grps[k][y]=[]; if(typeof r[y]==='number')grps[k][y].push(r[y]); }); });
-  const labels=Object.keys(grps);
-  return { type:'bar', data:{ labels, datasets:ys.map((y,i)=>({ label:y, data:labels.map(l=>{ const a=(grps[l][y]||[]).sort((a,b)=>a-b); return a.length?a[Math.floor(a.length/2)]:0; }), backgroundColor:labels.map(l=>colorFor(l,i)), borderWidth:1 }))}, options:co2(groupField||'group',ys.join(', ')+(ys.length?' (median)':'')) };
+  rows.forEach(r=>{ const raw = r[groupField]; const k = dynGroupField ? String(raw??'?') : String(raw||'?').toLowerCase(); if(!grps[k])grps[k]={}; ys.forEach(y=>{ if(!grps[k][y])grps[k][y]=[]; if(typeof r[y]==='number')grps[k][y].push(r[y]); }); });
+  const keys=Object.keys(grps);
+  return { type:'bar', data:{ labels:keys.map(labelFor), datasets:ys.map((y,i)=>({ label:y, data:keys.map(l=>{ const a=(grps[l][y]||[]).sort((a,b)=>a-b); return a.length?a[Math.floor(a.length/2)]:0; }), backgroundColor:keys.map(l=>colorFor(l,i)), borderWidth:1 }))}, options:co2(groupField||'group',ys.join(', ')+(ys.length?' (median)':'')) };
 }
 
 function emptyConfig() { return { type:'bar', data:{ labels:[], datasets:[] }, options:{ maintainAspectRatio:false } }; }
@@ -1286,8 +1587,8 @@ function resetApp() {
   imageFiles.forEach(img=>URL.revokeObjectURL(img.url));
   datasets=[]; enabledDatasets=new Set(); datasetCounter=0;
   filterCounter=0;
-  colorMode='none'; selectedZ=''; activeSource='';
-  tableSearchQuery=''; tableSortCol=null; tableSortDir=1; compareStat='mean';
+  colorMode='none'; selectedZ=''; activeSource=''; morphologyCol=''; chartOpacity=0.55;
+  tableSearchQuery=''; tableSortCol=null; tableSortDir=1; compareStat='mean'; comparePLow=25; comparePHigh=75;
   document.getElementById('charts-grid').innerHTML='';
   document.getElementById('app-screen').style.display='none';
   document.getElementById('upload-screen').style.display='flex';
@@ -1297,6 +1598,7 @@ function resetApp() {
   document.getElementById('csv-input').value='';
   document.getElementById('compare-tab').style.display='none';
   pendingBatches=[];
+  const opSlider = document.getElementById('opacity-slider'); if (opSlider) opSlider.value = 0.55;
 }
 
 function showToast(msg,type='success') {
