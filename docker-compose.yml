@@ -1,0 +1,32 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+    volumes:
+      # Mount the whole project into the container so code edits (yours or
+      # ones I send you) take effect immediately — Flask's debug=True
+      # auto-reloads on file changes, no rebuild needed for day-to-day work.
+      - .:/app
+      # Keep the frontend's node_modules out of this mount's way (backend
+      # doesn't need it, and it can be large / OS-specific).
+      - /app/frontend/node_modules
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      # Anonymous volume: keeps the container's own npm-installed
+      # node_modules instead of being overwritten by the host mount above.
+      - /app/node_modules
