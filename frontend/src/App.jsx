@@ -281,6 +281,8 @@ export default function App() {
   const [hoveredBlob, setHoveredBlob] = useState(null);
   const [loading, setLoading]         = useState(false);
   const [progressLogs, setProgressLogs] = useState([]);
+  const [progressPct, setProgressPct]   = useState(0);
+  const [progressStage, setProgressStage] = useState("");
   const [toast, setToast]             = useState(null);
   const imgRef   = useRef(null);
   const pollRef  = useRef(null);
@@ -332,14 +334,18 @@ export default function App() {
     setMsg("Processing… this may take a few seconds.", "processing");
     setLoading(true);
     setProgressLogs([]);
+    setProgressPct(0);
+    setProgressStage("Starting…");
 
     pollRef.current = setInterval(async () => {
       try {
         const r = await fetch(`${API_BASE}/progress`);
         const d = await r.json();
         if (d.logs) setProgressLogs([...d.logs]);
+        if (typeof d.progress === "number") setProgressPct(d.progress);
+        if (d.stage) setProgressStage(d.stage);
       } catch (_) {}
-    }, 1000);
+    }, 500);
 
     try {
       const res  = await fetch(`${API_BASE}/process`, { method: "POST", body: fd });
@@ -702,6 +708,15 @@ export default function App() {
                 {loading ? (
                   <div style={{width:"100%",maxWidth:500}}>
                     <p style={{marginBottom:12,color:"var(--amber)"}}>Analyzing vessels — please wait…</p>
+                    <div className="progress-bar-wrap">
+                      <div className="progress-bar-head">
+                        <span className="progress-bar-stage">{progressStage || "Working…"}</span>
+                        <span className="progress-bar-pct">{Math.round(progressPct)}%</span>
+                      </div>
+                      <div className="progress-bar-track">
+                        <div className="progress-bar-fill" style={{ width:`${Math.max(2, Math.min(100, progressPct))}%` }} />
+                      </div>
+                    </div>
                     <div style={{background:"var(--bg3)",border:"1px solid var(--border2)",borderRadius:"var(--radius)",padding:"12px 16px",fontFamily:"var(--mono)",fontSize:12,lineHeight:2,maxHeight:260,overflowY:"auto"}}>
                       {progressLogs.length === 0 && <span style={{color:"var(--text3)"}}>Starting up…</span>}
                       {progressLogs.map((l,i) => (

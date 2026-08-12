@@ -28,15 +28,24 @@ STATE = SessionState(output_root=OUTPUT_ROOT)
 # Shared progress log
 _progress_lock = threading.Lock()
 _progress_log: list[str] = []
+_progress_pct = 0.0
+_progress_stage = ""
 _processing = False
 
 def push_log(msg: str) -> None:
     with _progress_lock:
         _progress_log.append(msg)
 
-# Monkey-patch pipeline log function to also push to frontend
+def push_progress(pct: float, stage: str) -> None:
+    global _progress_pct, _progress_stage
+    with _progress_lock:
+        _progress_pct = pct
+        _progress_stage = stage
+
+# Monkey-patch pipeline log/progress hooks to also push to frontend
 import backend.pipeline as _pl
 _pl._push_log = push_log
+_pl._push_progress = push_progress
 
 
 @app.get("/api/health")
@@ -48,12 +57,14 @@ def health() -> Any:
 def progress() -> Any:
     with _progress_lock:
         logs = list(_progress_log)
-    return jsonify({"logs": logs, "processing": _processing})
+        pct = _progress_pct
+        stage = _progress_stage
+    return jsonify({"logs": logs, "processing": _processing, "progress": pct, "stage": stage})
 
 
 @app.post("/api/process")
 def process() -> Any:
-    global _processing
+    global _processing, _progress_pct, _progress_stage
     if "image_file" not in request.files or "geojson_file" not in request.files:
         return jsonify({"error": "image_file and geojson_file are required"}), 400
 
@@ -64,6 +75,8 @@ def process() -> Any:
 
     with _progress_lock:
         _progress_log.clear()
+        _progress_pct = 0.0
+        _progress_stage = ""
     _processing = True
     try:
         image_name = request.files["image_file"].filename or "image"
@@ -77,7 +90,7 @@ def process() -> Any:
 
 @app.post("/api/crop-process")
 def crop_process() -> Any:
-    global _processing
+    global _processing, _progress_pct, _progress_stage
     if "image_file" not in request.files or "geojson_file" not in request.files:
         return jsonify({"error": "image_file and geojson_file are required"}), 400
 
@@ -98,6 +111,8 @@ def crop_process() -> Any:
 
     with _progress_lock:
         _progress_log.clear()
+        _progress_pct = 0.0
+        _progress_stage = ""
     _processing = True
     try:
         out = STATE.process(

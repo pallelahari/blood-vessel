@@ -20,7 +20,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Callable, Iterator, Sequence
+
+# Called as ``progress_cb(done, total)`` to report fractional progress of a
+# long-running loop. ``total`` may be an estimate; callers should treat
+# ``done / total`` as the fraction complete and clamp to [0, 1].
+ProgressCallback = Callable[[int, int], None]
 
 import cv2
 import numpy as np
@@ -135,6 +140,19 @@ def _iter_neighbors8(r: int, c: int, h: int, w: int) -> Iterator[tuple[int, int]
             yield rr, cc
 
 
+def _local_skeleton_degree(skel: np.ndarray, r: int, c: int, h: int, w: int) -> int:
+    """Count skeleton 8-neighbors of a single pixel (O(1)).
+
+    Equivalent to indexing one pixel of :func:`_neighbor_skeleton_degrees`, but
+    without rebuilding the whole-image degree map on every call.
+    """
+    d = 0
+    for rr, cc in _iter_neighbors8(r, c, h, w):
+        if skel[rr, cc]:
+            d += 1
+    return d
+
+
 def _path_length_px(path_rc: np.ndarray) -> float:
     if path_rc.shape[0] < 2:
         return 0.0
@@ -217,13 +235,22 @@ def _walk_segment(
     return path
 
 
-def prune_skeleton_spurs(skel: np.ndarray, max_spur_length_px: float) -> np.ndarray:
+def prune_skeleton_spurs(
+    skel: np.ndarray,
+    max_spur_length_px: float,
+    *,
+    progress_cb: "ProgressCallback | None" = None,
+) -> np.ndarray:
     """
     Remove short dead-end branches on the skeleton (degree-1 tips).
 
     Only spurs whose first topological node is a junction (degree >= 3) are
     removed; segments between two free tips are left unchanged. This reduces
     spurious short edges at thick or noisy bifurcations.
+
+    ``progress_cb(done, total)`` is called once per pruning pass (``total`` is
+    an estimate that grows if extra passes are needed), for coarse progress
+    reporting on large skeletons.
     """
     if max_spur_length_px <= 0:
         return skel.astype(bool)
@@ -231,8 +258,13 @@ def prune_skeleton_spurs(skel: np.ndarray, max_spur_length_px: float) -> np.ndar
     s = skel.astype(bool).copy()
     h, w = s.shape
     changed = True
+    pass_idx = 0
     while changed:
         changed = False
+        # Degree map is recomputed once per pass to enumerate current tips.
+        # Per-step degree checks below use the O(1) local count on the live
+        # (mutating) skeleton, so results match a per-step full recompute
+        # without its whole-image cost.
         deg = _neighbor_skeleton_degrees(s)
         tips = np.argwhere(s & (deg == 1))
         for tr, tc in tips:
@@ -249,13 +281,13 @@ def prune_skeleton_spurs(skel: np.ndarray, max_spur_length_px: float) -> np.ndar
                 nxt = nbrs[0]
                 path.append(nxt)
                 prev, cur = cur, nxt
-                d = int(_neighbor_skeleton_degrees(s)[cur[0], cur[1]])
+                d = _local_skeleton_degree(s, cur[0], cur[1], h, w)
                 if d != 2:
                     break
             if len(path) < 2:
                 continue
             end = path[-1]
-            end_deg = int(_neighbor_skeleton_degrees(s)[end[0], end[1]])
+            end_deg = _local_skeleton_degree(s, end[0], end[1], h, w)
             if end_deg < 3:
                 continue
             length = _path_length_px(np.array(path, dtype=np.int32))
@@ -263,6 +295,13 @@ def prune_skeleton_spurs(skel: np.ndarray, max_spur_length_px: float) -> np.ndar
                 for rr, cc in path[:-1]:
                     s[rr, cc] = False
                 changed = True
+        pass_idx += 1
+        if progress_cb is not None:
+            # Passes needed is not known ahead of time; report progress toward
+            # a rolling estimate so the bar advances without ever reaching 100%
+            # until pruning actually converges.
+            est_total = pass_idx + (1 if changed else 0)
+            progress_cb(pass_idx, max(est_total, 1))
     return s
 
 
@@ -359,6 +398,8 @@ def analyze_vessel_mask(
     radius_exclude_near_junction_px: float = 0.0,
     min_object_area_px: int = 0,
     prune_spur_length_px: float = 0.0,
+    prune_progress_cb: ProgressCallback | None = None,
+    segment_progress_cb: ProgressCallback | None = None,
 ) -> tuple[list[VesselSegment], np.ndarray, dict]:
     """
     Full pipeline: mask → skeleton → segments → lengths and radii.
@@ -410,7 +451,7 @@ def analyze_vessel_mask(
         }
 
     skel = skeletonize(fg)
-    skel = prune_skeleton_spurs(skel, prune_spur_length_px)
+    skel = prune_skeleton_spurs(skel, prune_spur_length_px, progress_cb=prune_progress_cb)
     dt = distance_transform_edt(fg)
     deg = _neighbor_skeleton_degrees(skel)
     node_mask = skel & (deg != 2)
@@ -427,7 +468,10 @@ def analyze_vessel_mask(
     label_img = np.zeros(fg.shape, dtype=np.int32)
     segments: list[VesselSegment] = []
     seg_id = 0
-    for path in raw_paths:
+    n_paths = len(raw_paths)
+    for path_i, path in enumerate(raw_paths):
+        if segment_progress_cb is not None:
+            segment_progress_cb(path_i, n_paths)
         path_rc = np.array(path, dtype=np.int32)
         length_px = _path_length_px(path_rc)
         if length_px < min_segment_length_px:
@@ -770,6 +814,7 @@ def blob_statistics_records(
     shape_elongated_min_axis_ratio: float = 4.0,
     shape_min_area_for_morphology_label: int = 4,
     merge_disconnected_segments_in_blob: bool = True,
+    progress_cb: ProgressCallback | None = None,
 ) -> tuple[list[dict], np.ndarray, np.ndarray]:
     """
     Aggregate segment metrics per foreground connected component (blob).
@@ -831,6 +876,8 @@ def blob_statistics_records(
 
     rows: list[dict] = []
     for bid in range(1, n_blobs + 1):
+        if progress_cb is not None:
+            progress_cb(bid - 1, n_blobs)
         idx = np.flatnonzero(seg_blob == bid)
         area_px = int(areas[bid]) if bid < areas.size else 0
 

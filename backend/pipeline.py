@@ -34,11 +34,36 @@ MAX_DIM = None   # No resizing — process at full resolution
 
 
 _push_log = None  # injected by app.py
+_push_progress = None  # injected by app.py
 
 def log(msg: str) -> None:
     print(f"[pipeline] {msg}", flush=True)
     if _push_log:
         _push_log(msg)
+
+
+def set_progress(pct: float, stage: str) -> None:
+    """Report overall pipeline progress (0-100) and the current stage label."""
+    if _push_progress:
+        _push_progress(float(max(0.0, min(100.0, pct))), stage)
+
+
+def _sub_progress(lo: float, hi: float, stage: str):
+    """Build a ``progress_cb(done, total)`` that maps a loop's fraction onto the
+    global ``[lo, hi]`` percentage band. Throttled to whole-percent changes so
+    tight loops don't flood the shared progress state."""
+    last = [-1]
+
+    def cb(done: int, total: int) -> None:
+        frac = (done / total) if total else 0.0
+        frac = 0.0 if frac < 0 else (1.0 if frac > 1 else frac)
+        pct = lo + (hi - lo) * frac
+        ip = int(pct)
+        if ip != last[0]:
+            last[0] = ip
+            set_progress(pct, stage)
+
+    return cb
 
 
 def clean_length_width_for_plot(df, area_col="area_px", length_col="max_segment_length_px",
@@ -115,6 +140,7 @@ class SessionState:
         import re
         t0 = time.time()
 
+        set_progress(1, "Decoding image")
         log("Decoding image...")
         nparr = np.frombuffer(image_bytes, np.uint8)
         image_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -149,12 +175,14 @@ class SessionState:
         geojson_path = out_dir / "input.geojson"
         geojson_path.write_bytes(geojson_bytes)
 
+        set_progress(6, "Building mask from GeoJSON")
         log("Building mask from GeoJSON...")
         t1 = time.time()
         mask_u8, _ = geojson_to_mask(geojson_path, shape_hw=image_gray.shape[:2], origin_xy=(0, 0))
         mask_bool = mask_u8.astype(bool)
         log(f"Mask built in {time.time()-t1:.1f}s — foreground px: {mask_bool.sum():,}")
 
+        set_progress(10, "Skeletonizing vessels")
         log("Running vessel analysis (skeletonization)...")
         t2 = time.time()
         segments, seg_label_image, meta = analyze_vessel_mask(
@@ -165,17 +193,26 @@ class SessionState:
             radius_exclude_near_junction_px=RADIUS_EXCLUDE_NEAR_JUNCTION_PX,
             min_object_area_px=MIN_OBJECT_AREA_PX,
             prune_spur_length_px=PRUNE_SPUR_LENGTH_PX,
+            prune_progress_cb=_sub_progress(10, 30, "Pruning skeleton spurs"),
+            segment_progress_cb=_sub_progress(30, 50, "Tracing vessel segments"),
         )
         log(f"Analysis done in {time.time()-t2:.1f}s — {len(segments)} segments found")
 
+        set_progress(50, "Computing blob statistics")
         log("Computing blob statistics...")
         t3 = time.time()
-        rows, cc_labels, _ = blob_statistics_records(segments, mask_bool, pixel_size_um=PIXEL_SIZE_UM)
+        rows, cc_labels, _ = blob_statistics_records(
+            segments,
+            mask_bool,
+            pixel_size_um=PIXEL_SIZE_UM,
+            progress_cb=_sub_progress(50, 80, "Computing blob statistics"),
+        )
         df_blobs = pd.DataFrame(rows)
         df_blobs_clean = clean_length_width_for_plot(df_blobs)
         df_blobs_clean.to_csv(out_dir / "blob_metrics.csv", index=False)
         log(f"Blob stats done in {time.time()-t3:.1f}s — {len(df_blobs)} blobs")
 
+        set_progress(80, "Saving intermediates")
         log("Saving intermediates...")
         np.savez_compressed(
             out_dir / "intermediates.npz",
@@ -186,6 +223,7 @@ class SessionState:
             segment_label_image=seg_label_image.astype(np.int32),
         )
 
+        set_progress(82, "Computing 2D spatial autocorrelation")
         log("Computing 2D spatial autocorrelation...")
         t3b = time.time()
         acf_path = out_dir / "autocorrelation_2d.html"
@@ -197,6 +235,7 @@ class SessionState:
         )
         log(f"Autocorrelation report done in {time.time()-t3b:.1f}s")
 
+        set_progress(90, "Rendering 2D autocorrelation")
         log("Rendering 2D autocorrelation for frontend...")
         t3c = time.time()
         acf_npz_name = f"autocorrelation-{safe_name}.npz"
@@ -206,6 +245,7 @@ class SessionState:
         )
         log(f"Frontend ACF rendered in {time.time()-t3c:.1f}s")
 
+        set_progress(94, "Rendering overlays")
         log("Rendering overlays...")
         t4 = time.time()
         blob_overlay = annotate_blob_ids(render_blob_overlay(image_gray, cc_labels, alpha=0.6), cc_labels)
@@ -224,6 +264,7 @@ class SessionState:
         self.output_dir = out_dir
         self.branch_points = []
 
+        set_progress(100, "Done")
         log(f"TOTAL processing time: {time.time()-t0:.1f}s")
 
         # Build blob records for dashboard (safe JSON serializable)
