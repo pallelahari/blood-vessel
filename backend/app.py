@@ -90,14 +90,15 @@ def process() -> Any:
 
 @app.post("/api/crop-process")
 def crop_process() -> Any:
-    global _processing, _progress_pct, _progress_stage
-    if "image_file" not in request.files or "geojson_file" not in request.files:
-        return jsonify({"error": "image_file and geojson_file are required"}), 400
-
-    image_bytes  = request.files["image_file"].read()
-    geojson_bytes = request.files["geojson_file"].read()
-    image_name   = request.files["image_file"].filename or "image"
-
+    """
+    Region-select analysis. Re-uses the main analysis already held in
+    STATE (see SessionState.region_view) instead of re-running the
+    segmentation pipeline on a cropped sub-image — that would reassign
+    blob IDs from scratch and could distort the shape/measurements of any
+    vessel cut by the crop boundary, causing the region view to disagree
+    with the main image. No image/GeoJSON re-upload is needed: the crop is
+    just a window into the analysis that's already been computed.
+    """
     try:
         x1 = int(request.form.get("x1", 0))
         y1 = int(request.form.get("y1", 0))
@@ -109,22 +110,10 @@ def crop_process() -> Any:
     if x2 <= x1 or y2 <= y1:
         return jsonify({"error": "Invalid crop region — x2 must be > x1 and y2 > y1"}), 400
 
-    with _progress_lock:
-        _progress_log.clear()
-        _progress_pct = 0.0
-        _progress_stage = ""
-    _processing = True
     try:
-        out = STATE.process(
-            image_bytes=image_bytes,
-            geojson_bytes=geojson_bytes,
-            image_name=f"{image_name}_crop_{x1}_{y1}_{x2}_{y2}",
-            crop=(x1, y1, x2, y2),
-        )
+        out = STATE.region_view(x1=x1, y1=y1, x2=x2, y2=y2)
     except Exception as exc:
-        _processing = False
         return jsonify({"error": str(exc)}), 400
-    _processing = False
     return jsonify(out)
 
 
