@@ -135,8 +135,14 @@ class SessionState:
     df_blobs: pd.DataFrame | None = None
     output_dir: Path | None = None
     branch_points: list[tuple[int, int]] = field(default_factory=list)
+    # Full-resolution intermediates kept from the last main analysis so that
+    # a region-select view can slice them directly (see region_view() below)
+    # instead of re-running segmentation on a cropped sub-image.
+    image_gray: np.ndarray | None = None
+    mask_u8: np.ndarray | None = None
+    skeleton_arr: np.ndarray | None = None
 
-    def process(self, image_bytes: bytes, geojson_bytes: bytes, image_name: str = "image", crop: tuple | None = None) -> dict[str, Any]:
+    def process(self, image_bytes: bytes, geojson_bytes: bytes, image_name: str = "image", update_session: bool = True) -> dict[str, Any]:
         import re
         t0 = time.time()
 
@@ -153,15 +159,6 @@ class SessionState:
         scale = 1.0  # No resizing — full resolution
 
         image_gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-
-        # Apply crop if requested
-        if crop is not None:
-            cx1, cy1, cx2, cy2 = crop
-            cx1 = max(0, cx1); cy1 = max(0, cy1)
-            cx2 = min(w0, cx2); cy2 = min(h0, cy2)
-            image_bgr  = image_bgr[cy1:cy2, cx1:cx2]
-            image_gray = image_gray[cy1:cy2, cx1:cx2]
-            log(f"Cropped to ({cx1},{cy1})→({cx2},{cy2}) = {cx2-cx1}×{cy2-cy1} px")
 
         log(f"Image decoded in {time.time()-t0:.1f}s")
 
@@ -259,10 +256,17 @@ class SessionState:
         cv2.imwrite(str(out_dir / "compact_overlay.png"), compact_overlay)
         log(f"Overlays rendered in {time.time()-t4:.1f}s")
 
-        self.cc_labels = cc_labels
-        self.df_blobs = df_blobs_clean
-        self.output_dir = out_dir
-        self.branch_points = []
+        # Only the main (full-image) analysis should become the "live" session
+        # that /api/blob-info, /api/finalize-branches, and /api/region-view
+        # read from.
+        if update_session:
+            self.cc_labels = cc_labels
+            self.df_blobs = df_blobs_clean
+            self.output_dir = out_dir
+            self.branch_points = []
+            self.image_gray = image_gray
+            self.mask_u8 = mask_u8
+            self.skeleton_arr = meta["skeleton"]
 
         set_progress(100, "Done")
         log(f"TOTAL processing time: {time.time()-t0:.1f}s")
@@ -325,6 +329,82 @@ class SessionState:
             return {"blob_id": 0}
         row = blob_summary_row(self.df_blobs, blob_id)
         return row if row is not None else {"blob_id": blob_id}
+
+    def region_view(self, x1: int, y1: int, x2: int, y2: int) -> dict[str, Any]:
+        """Return overlays + stats for a rectangular window of the image
+        that has *already* been analyzed, by slicing the existing
+        full-resolution cc_labels/mask/skeleton arrays and reusing the main
+        analysis's blob IDs and per-blob measurements.
+
+        This deliberately does NOT re-run segmentation/skeletonization on a
+        cropped sub-image. Doing so would (a) restart connected-component
+        labeling from 1 within the crop, so blob IDs in the region view
+        would have no relation to the IDs shown on the main image, and (b)
+        re-skeletonize any vessel that happens to be cut by the window edge
+        in isolation, changing its shape/measurements from the whole-vessel
+        version. Slicing the already-computed arrays keeps IDs and
+        measurements identical to what's shown on the main image.
+        """
+        if (self.cc_labels is None or self.df_blobs is None or self.image_gray is None
+                or self.mask_u8 is None or self.skeleton_arr is None or self.output_dir is None):
+            raise ValueError("Run the main analysis first.")
+
+        h, w = self.image_gray.shape[:2]
+        x1 = max(0, min(w, int(x1))); x2 = max(0, min(w, int(x2)))
+        y1 = max(0, min(h, int(y1))); y2 = max(0, min(h, int(y2)))
+        if x2 <= x1 or y2 <= y1:
+            raise ValueError("Invalid region — x2 must be > x1 and y2 > y1")
+
+        sub_gray   = self.image_gray[y1:y2, x1:x2]
+        sub_mask   = self.mask_u8[y1:y2, x1:x2]
+        sub_labels = self.cc_labels[y1:y2, x1:x2]
+        sub_skel   = self.skeleton_arr[y1:y2, x1:x2]
+
+        blob_ids_in_view = sorted(int(b) for b in np.unique(sub_labels) if b > 0)
+        df_view = self.df_blobs[self.df_blobs["blob_id"].isin(blob_ids_in_view)].copy()
+
+        blob_overlay = annotate_blob_ids(render_blob_overlay(sub_gray, sub_labels, alpha=0.6), sub_labels)
+        skel_overlay_img = skeleton_overlay(sub_mask, sub_skel)
+        compact_overlay_img = compact_views(sub_mask, sub_labels, df_view)
+
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        region_dir = self.output_dir / f"region_{x1}_{y1}_{x2}_{y2}__{stamp}"
+        region_dir.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(region_dir / "original.png"), sub_gray)
+        cv2.imwrite(str(region_dir / "binary_mask.png"), (sub_mask * 255).astype(np.uint8))
+        cv2.imwrite(str(region_dir / "blob_labeled.png"), blob_overlay)
+        cv2.imwrite(str(region_dir / "skeleton_overlay.png"), skel_overlay_img)
+        cv2.imwrite(str(region_dir / "compact_overlay.png"), compact_overlay_img)
+        df_view.to_csv(region_dir / "blob_metrics.csv", index=False)
+
+        def safe(v):
+            import math
+            if v is None: return None
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)): return None
+            return v
+
+        blob_records = []
+        for _, row in df_view.iterrows():
+            blob_records.append({k: safe(row.get(k)) for k in [
+                "blob_id","morphology_2d","circularity_2d","eccentricity_2d",
+                "area_px","n_segments","total_skeleton_length_px","max_segment_length_px",
+                "width_mean_length_weighted_px","length_clean","width_clean",
+                "centroid_x","centroid_y",
+            ]})
+
+        return {
+            "width": x2 - x1,
+            "height": y2 - y1,
+            "output_dir": str(region_dir),
+            "blobs": blob_records,
+            "images": {
+                "original": to_png_data_url(sub_gray),
+                "binary_mask": to_png_data_url((sub_mask * 255).astype(np.uint8)),
+                "blob_labeled": to_png_data_url(blob_overlay),
+                "skeleton_overlay": to_png_data_url(skel_overlay_img),
+                "compact_overlay": to_png_data_url(compact_overlay_img),
+            },
+        }
 
     def finalize_branches(self, points: list[tuple[int, int]]) -> dict[str, Any]:
         if self.cc_labels is None or self.df_blobs is None or self.output_dir is None:
