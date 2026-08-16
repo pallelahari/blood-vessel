@@ -460,6 +460,21 @@ export default function App() {
     return { left, top, width, height };
   }
 
+  // Live pixel dimensions of the in-progress selection, in *image* px
+  // (not screen px) — converts both drag endpoints through the same
+  // screen→image scaling used for the confirmed rect so the readout
+  // matches what the confirmed box will show once the drag finishes.
+  function liveImgDims() {
+    const s = drawStart, c = drawCurrent;
+    if (!s || !c || !imgRef.current || !result) return null;
+    const p1 = toImgCoords(s.x, s.y);
+    const p2 = toImgCoords(c.x, c.y);
+    return {
+      w: Math.abs(p2.x - p1.x),
+      h: Math.abs(p2.y - p1.y),
+    };
+  }
+
   // Confirmed crop rect in screen coords (for showing after mouse up)
   function confirmedScreenRect() {
     if (!cropRect || !imgRef.current || !result) return null;
@@ -475,25 +490,26 @@ export default function App() {
   }
 
   async function runCropAnalysis() {
-    if (!cropRect || !imageFile || !geoFile) return;
+    if (!cropRect || !result) return;
     setCropLoading(true);
     setCropResult(null);
-    setMsg("Running crop analysis…", "processing");
+    setMsg("Running region analysis…", "processing");
+    // Only the window coordinates are needed — the backend slices the
+    // already-computed full-image arrays rather than re-analyzing a
+    // re-uploaded crop, so blob IDs/measurements stay consistent with
+    // the main image.
     const fd = new FormData();
-    fd.append("image_file", imageFile);
-    fd.append("geojson_file", geoFile);
     fd.append("x1", cropRect.x1);
     fd.append("y1", cropRect.y1);
     fd.append("x2", cropRect.x2);
     fd.append("y2", cropRect.y2);
-    fd.append("image_name", imageFile.name);
     try {
       const res  = await fetch(`${API_BASE}/crop-process`, { method: "POST", body: fd });
       const body = await res.json();
-      if (!res.ok) throw new Error(body.error || "Crop analysis failed");
+      if (!res.ok) throw new Error(body.error || "Region analysis failed");
       setCropResult(body);
-      setMsg(`Crop done — ${body.blobs?.length ?? 0} blobs in selected region`, "done");
-      showToast(`✓ Crop analysis done! ${body.blobs?.length ?? 0} blobs found`, "success");
+      setMsg(`Region analysis done — ${body.blobs?.length ?? 0} blobs in selected region`, "done");
+      showToast(`✓ Region analysis done! ${body.blobs?.length ?? 0} blobs found`, "success");
     } catch (err) {
       setMsg(`Error: ${err.message || err}`, "error");
       showToast(`✕ ${err.message || err}`, "error");
@@ -624,7 +640,16 @@ export default function App() {
               onClick={() => { setCropMode(!cropMode); clearCrop(); setBranchMode(false); }}>
               {cropMode ? "✏️  Drawing ON — drag image" : "⬚  Enable Region Select"}
             </button>
-            {cropRect && (
+            {drawing && (() => {
+              const d = liveImgDims();
+              return d ? (
+                <div style={{fontSize:11, fontFamily:"var(--mono)", color:"#7c5cfc", background:"var(--bg3)", border:"1px solid rgba(124,92,252,0.4)", borderRadius:6, padding:"6px 10px", lineHeight:1.8}}>
+                  <div style={{color:"var(--text3)"}}>Drawing…</div>
+                  <div>Size: {d.w} × {d.h} px</div>
+                </div>
+              ) : null;
+            })()}
+            {!drawing && cropRect && (
               <div style={{fontSize:11, fontFamily:"var(--mono)", color:"var(--text2)", background:"var(--bg3)", border:"1px solid var(--border2)", borderRadius:6, padding:"6px 10px", lineHeight:1.8}}>
                 <div>x1={cropRect.x1}  y1={cropRect.y1}</div>
                 <div>x2={cropRect.x2}  y2={cropRect.y2}</div>
@@ -754,9 +779,16 @@ export default function App() {
                   {/* Live draw rect while dragging */}
                   {drawing && drawStart && drawCurrent && (() => {
                     const r = screenRect();
+                    const d = liveImgDims();
                     return r ? (
                       <div style={{ position:"absolute", left:r.left, top:r.top, width:r.width, height:r.height,
-                        border:"2px dashed #7c5cfc", background:"rgba(124,92,252,0.1)", pointerEvents:"none" }} />
+                        border:"2px dashed #7c5cfc", background:"rgba(124,92,252,0.1)", pointerEvents:"none" }}>
+                        {d && (
+                          <div style={{ position:"absolute", top:-20, left:0, fontSize:10, color:"#7c5cfc", background:"rgba(13,15,20,0.9)", padding:"2px 6px", borderRadius:4, fontFamily:"var(--mono)", whiteSpace:"nowrap" }}>
+                            {d.w} × {d.h} px
+                          </div>
+                        )}
+                      </div>
                     ) : null;
                   })()}
 
