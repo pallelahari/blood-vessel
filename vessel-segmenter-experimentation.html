@@ -90,6 +90,12 @@ body {
 #smoothingPanel[aria-disabled="true"],
 #filterPanel[aria-disabled="true"] { opacity: 0.35; pointer-events: none; }
 
+.readout {
+  font-family: var(--mono); font-size: 11px; color: var(--teal); background: var(--bg3);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px;
+  line-height: 1.6; margin-bottom: 14px; word-break: break-word;
+}
+
 .field { margin-bottom: 14px; }
 .field label { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--text2); margin-bottom: 6px; }
 .field .val { color: var(--teal); font-family: var(--mono); }
@@ -222,7 +228,7 @@ input[type="range"]::-moz-range-thumb {
         <label for="blurK"><span>Gaussian smoothing</span><span class="val" id="blurKVal">3</span></label>
         <input type="range" id="blurK" min="0" max="21" step="2" value="3" />
       </div>
-      <div class="field-hint">Gaussian blur applied before thresholding, in pixels. Raise this to suppress noise/grain on grainy images; too high erodes fine, thin vessels.</div>
+      <div class="field-hint">Gaussian blur applied to the raw image <em>before</em> thresholding, in pixels. Raise this to suppress noise/grain on grainy images; too high erodes fine, thin vessels. With the <strong>Background &sigma;</strong> threshold method this doubles as a matched filter — a larger kernel then actively <em>increases</em> sensitivity to faint, broad vessels rather than just rounding off the contours.</div>
       <div class="field">
         <label for="closeK"><span>Bridge gaps</span><span class="val" id="closeKVal">7</span></label>
         <input type="range" id="closeK" min="0" max="31" step="2" value="7" />
@@ -233,10 +239,40 @@ input[type="range"]::-moz-range-thumb {
     <section class="panel" id="thresholdPanel" aria-disabled="true">
       <h2>Threshold</h2>
       <div class="field">
-        <label for="threshOffset"><span>Sensitivity</span><span class="val" id="threshOffsetVal">auto</span></label>
-        <input type="range" id="threshOffset" min="-80" max="80" step="1" value="0" />
+        <label for="threshMethod"><span>Method</span></label>
+        <select id="threshMethod">
+          <option value="otsu">Otsu &mdash; one global intensity cut</option>
+          <option value="sigma">Background &sigma; &mdash; N&sigma; over local background</option>
+        </select>
       </div>
-      <div class="field-hint">Starts from automatic (Otsu) thresholding. Slide right to select more of a vessel (helps if only part of it is being picked up), left to select less.</div>
+
+      <div id="otsuFields">
+        <div class="field-hint">Picks a single intensity that best separates the image's two brightness populations. Because the cut is re-derived from the histogram every time, smoothing mostly just tidies the contours &mdash; it does not reveal fainter vessels.</div>
+        <div class="field">
+          <label for="threshOffset"><span>Sensitivity</span><span class="val" id="threshOffsetVal">auto</span></label>
+          <input type="range" id="threshOffset" min="-80" max="80" step="1" value="0" />
+        </div>
+        <div class="field-hint">Starts from automatic (Otsu) thresholding. Slide right to select more of a vessel (helps if only part of it is being picked up), left to select less.</div>
+      </div>
+
+      <div id="sigmaFields" class="hidden">
+        <div class="field-hint">Source-detection scheme used by SExtractor / <a href="https://sep.readthedocs.io/en/stable/" target="_blank" rel="noopener">SEP</a> in astronomy: model the smoothly-varying background and its pixel noise, subtract it, convolve with the smoothing kernel, then keep everything a fixed number of noise sigmas above the local background. The cut is absolute (in noise units), so smoothing genuinely buys depth.</div>
+        <div class="field">
+          <label for="nsigma"><span>Detection threshold</span><span class="val" id="nsigmaVal">2.0 &sigma;</span></label>
+          <input type="range" id="nsigma" min="0.5" max="10" step="0.1" value="2" />
+        </div>
+        <div class="field-hint">Lower = deeper, picks up fainter vessel edges and diffuse signal, at the cost of more spurious noise blobs (raise <em>Minimum area</em> to suppress those). SExtractor's default is 1.5&sigma;.</div>
+        <div class="field">
+          <label for="bkgBox"><span>Background mesh</span><span class="val" id="bkgBoxVal">64 px</span></label>
+          <input type="range" id="bkgBox" min="16" max="512" step="8" value="64" />
+        </div>
+        <div class="field-hint">Cell size of the grid the background and noise are estimated on. Should be comfortably larger than the biggest vessel, but small enough to track uneven illumination &mdash; too small and the vessels themselves get absorbed into the background model. Check the <em>Background</em> view tab: it should look like illumination, with no vessels in it.</div>
+        <div class="field checkbox-field">
+          <label for="matchedFilter"><input type="checkbox" id="matchedFilter" checked /> Matched-filter noise scaling</label>
+        </div>
+        <div class="field-hint">On: the threshold is N&sigma; of the <em>convolved</em> image, so the noise reduction from smoothing is credited back as sensitivity (a true N&sigma; cut &mdash; recommended, and equivalent to SEP's <code>filter_type='matched'</code>). Off: N&sigma; of the <em>unconvolved</em> background RMS, SExtractor's more conservative default convention.</div>
+        <div class="readout" id="bkgReadout">&ndash;</div>
+      </div>
     </section>
 
     <section class="panel" id="splitPanel" aria-disabled="true">
@@ -282,6 +318,8 @@ input[type="range"]::-moz-range-thumb {
     <div class="view-tabs">
       <button class="view-tab active" data-view="preview">Contours</button>
       <button class="view-tab" data-view="original">Original</button>
+      <button class="view-tab hidden" data-view="background" id="tabBackground">Background</button>
+      <button class="view-tab hidden" data-view="snr" id="tabSnr">S/N map</button>
     </div>
 
     <div class="canvas-wrap">
@@ -1495,8 +1533,19 @@ X.B(E,Y);return E}return J}())
   const thresholdPanel = $("thresholdPanel");
   const smoothingPanel = $("smoothingPanel");
   const filterPanel = $("filterPanel");
+  const threshMethod = $("threshMethod");
+  const otsuFields = $("otsuFields");
+  const sigmaFields = $("sigmaFields");
   const threshOffset = $("threshOffset");
   const threshOffsetVal = $("threshOffsetVal");
+  const nsigma = $("nsigma");
+  const nsigmaVal = $("nsigmaVal");
+  const bkgBox = $("bkgBox");
+  const bkgBoxVal = $("bkgBoxVal");
+  const matchedFilter = $("matchedFilter");
+  const bkgReadout = $("bkgReadout");
+  const tabBackground = $("tabBackground");
+  const tabSnr = $("tabSnr");
   const blurK = $("blurK");
   const blurKVal = $("blurKVal");
   const closeK = $("closeK");
@@ -1532,6 +1581,12 @@ X.B(E,Y);return E}return J}())
   let imageName = "image";
   let currentView = "preview";
   let debounceTimer = null;
+
+  // Cached background model (see estimateBackground). Keyed on the mesh
+  // params only, since the image it is derived from changes only on load.
+  let bkgCache = null;        // { key, bkg: cv.Mat CV_32F, rms: cv.Mat CV_32F, medRms }
+  // Diagnostic renders for the "Background" / "S/N map" view tabs.
+  let diagBkg = null, diagSnr = null;
 
   // Segmented regions, kept as plain pixel-coordinate polygons.
   // Each: { exterior: [[x,y],...], area }
@@ -1654,6 +1709,11 @@ X.B(E,Y);return E}return J}())
     if (originalMat) originalMat.delete();
     originalMat = cv.imread(sourceCanvas);
 
+    // A new image invalidates the background model and both diagnostic maps.
+    clearBkgCache();
+    if (diagBkg) { diagBkg.delete(); diagBkg = null; }
+    if (diagSnr) { diagSnr.delete(); diagSnr = null; }
+
     fileMeta.textContent = `${file.name}  ·  ${w}×${h}px${note || ""}`;
     fileMeta.classList.remove("hidden");
     paramsPanel.setAttribute("aria-disabled", "false");
@@ -1679,8 +1739,8 @@ X.B(E,Y);return E}return J}())
 
   // Internal defaults for the params that aren't exposed as sliders.
   const FIXED = {
-    method: "otsu",
     auto_stretch: true,   // percentile contrast stretch + saturated-artifact exclusion (always on)
+    bkg_mesh_filter: 3,   // median filter width, in mesh cells, applied to the coarse background grids
     border_margin: 0,
     open_ksize: 3,
     simplify_tol: 1.2,
@@ -1690,7 +1750,11 @@ X.B(E,Y);return E}return J}())
     return {
       ...FIXED,
       invert: invert.checked,
+      method: threshMethod.value,
       thresh_offset: Number(threshOffset.value),
+      nsigma: Number(nsigma.value),
+      bkg_box: Number(bkgBox.value),
+      matched: matchedFilter.checked,
       blur_ksize: Number(blurK.value),
       close_ksize: Number(closeK.value),
       min_area: Number(minArea.value),
@@ -1698,6 +1762,8 @@ X.B(E,Y);return E}return J}())
       watershed_sensitivity: Number(splitSensitivity.value) / 100,
     };
   }
+
+  syncMethodUI();
 
   invert.addEventListener("change", scheduleRun);
 
@@ -1709,6 +1775,34 @@ X.B(E,Y);return E}return J}())
     splitSensitivityVal.textContent = `${splitSensitivity.value}%`;
     scheduleRun();
   });
+
+  threshMethod.addEventListener("change", () => {
+    syncMethodUI();
+    scheduleRun();
+  });
+
+  // Shows only the controls belonging to the active threshold method, and
+  // exposes the two sigma-mode diagnostic view tabs alongside them.
+  function syncMethodUI() {
+    const sigma = threshMethod.value === "sigma";
+    otsuFields.classList.toggle("hidden", sigma);
+    sigmaFields.classList.toggle("hidden", !sigma);
+    tabBackground.classList.toggle("hidden", !sigma);
+    tabSnr.classList.toggle("hidden", !sigma);
+    if (!sigma && (currentView === "background" || currentView === "snr")) {
+      selectView("preview");
+    }
+  }
+
+  nsigma.addEventListener("input", () => {
+    nsigmaVal.textContent = `${Number(nsigma.value).toFixed(1)} \u03c3`;
+    scheduleRun();
+  });
+  bkgBox.addEventListener("input", () => {
+    bkgBoxVal.textContent = `${bkgBox.value} px`;
+    scheduleRun();
+  });
+  matchedFilter.addEventListener("change", scheduleRun);
 
   // Live value readouts + debounced re-segmentation for the two sliders.
   threshOffset.addEventListener("input", () => {
@@ -1848,19 +1942,230 @@ X.B(E,Y);return E}return J}())
     }
   }
 
+  // ---------- background modelling (SExtractor / SEP style) ----------
+  //
+  // The Otsu path asks "what single intensity best splits this histogram?",
+  // which is a *relative* question — smoothing changes both populations at
+  // once, so the cut moves with them and faint structure never crosses it.
+  // The functions below instead build an explicit model of the background
+  // and of the pixel noise, so detection can be stated in absolute terms:
+  // "keep everything more than N noise-sigmas above the local background".
+  // That cut does not drift when the image is smoothed, which is what lets
+  // the smoothing kernel act as a matched filter and pull out faint signal.
+
+  // Robust level + noise sigma from a 256-bin intensity histogram, by
+  // iterative sigma clipping. Follows SExtractor: clip to median +/- 3 sigma
+  // and repeat until sigma stops moving, then take the mode estimate
+  // 2.5*median - 1.5*mean while the clipped distribution is still only
+  // mildly skewed (i.e. still background-dominated), else the plain median.
+  // The mode correction is what stops the faint wings of real vessels from
+  // dragging the background level upwards in busy cells.
+  function clippedStats(hist, nTotal) {
+    let lo = 0, hi = 255;
+    let mean = 0, median = 0, sigma = 0, prevSigma = -1;
+    for (let iter = 0; iter < 6; iter++) {
+      let n = 0, s1 = 0, s2 = 0;
+      for (let v = lo; v <= hi; v++) {
+        const c = hist[v];
+        if (!c) continue;
+        n += c; s1 += c * v; s2 += c * v * v;
+      }
+      if (n < 4) break;
+      mean = s1 / n;
+      sigma = Math.sqrt(Math.max(s2 / n - mean * mean, 0));
+      let cum = 0; const half = n / 2;
+      median = lo;
+      for (let v = lo; v <= hi; v++) { cum += hist[v]; if (cum >= half) { median = v; break; } }
+      if (sigma <= 0) break;
+      if (prevSigma >= 0 && Math.abs(sigma - prevSigma) < 0.02 * prevSigma) break;
+      prevSigma = sigma;
+      const nlo = Math.max(0, Math.ceil(median - 3 * sigma));
+      const nhi = Math.min(255, Math.floor(median + 3 * sigma));
+      if (nhi <= nlo) break;
+      lo = nlo; hi = nhi;
+    }
+    const level = (sigma > 0 && (mean - median) / sigma < 0.3) ? (2.5 * median - 1.5 * mean) : median;
+    // Floor the noise estimate: the source image is 8-bit, so a genuinely
+    // quiet background can quantise to sigma ~ 0 and would otherwise produce
+    // a zero threshold (i.e. detect everything).
+    return [level, Math.max(sigma, 0.5)];
+  }
+
+  // Median-filters a coarse grid in place-of-value, so a single mesh cell
+  // that happened to be swamped by one big bright vessel cannot punch a
+  // bump into the interpolated background model.
+  function medianFilterGrid(grid, nx, ny, k) {
+    if (k < 2 || nx * ny < 2) return grid;
+    const out = new Float32Array(nx * ny);
+    const r = Math.floor(k / 2);
+    const buf = [];
+    for (let gy = 0; gy < ny; gy++) {
+      for (let gx = 0; gx < nx; gx++) {
+        buf.length = 0;
+        for (let dy = -r; dy <= r; dy++) {
+          const yy = gy + dy;
+          if (yy < 0 || yy >= ny) continue;
+          for (let dx = -r; dx <= r; dx++) {
+            const xx = gx + dx;
+            if (xx < 0 || xx >= nx) continue;
+            buf.push(grid[yy * nx + xx]);
+          }
+        }
+        buf.sort((a, b) => a - b);
+        out[gy * nx + gx] = buf[buf.length >> 1];
+      }
+    }
+    return out;
+  }
+
+  // Full-resolution background + noise maps. Estimates both on a coarse
+  // mesh of `boxSize` cells, median-filters the two grids, then interpolates
+  // them back up. Result is a per-pixel local background level and a
+  // per-pixel local noise sigma, which is what makes the N-sigma cut robust
+  // to uneven illumination across the field.
+  function estimateBackground(src8, boxSize, meshFilter) {
+    const rows = src8.rows, cols = src8.cols;
+    const nx = Math.max(1, Math.round(cols / boxSize));
+    const ny = Math.max(1, Math.round(rows / boxSize));
+    const data = src8.data;
+    const hist = new Float64Array(256);
+    let bkgGrid = new Float32Array(nx * ny);
+    let rmsGrid = new Float32Array(nx * ny);
+
+    for (let gy = 0; gy < ny; gy++) {
+      const y0 = Math.floor((gy * rows) / ny), y1 = Math.floor(((gy + 1) * rows) / ny);
+      for (let gx = 0; gx < nx; gx++) {
+        const x0 = Math.floor((gx * cols) / nx), x1 = Math.floor(((gx + 1) * cols) / nx);
+        hist.fill(0);
+        let n = 0;
+        for (let y = y0; y < y1; y++) {
+          const row = y * cols;
+          for (let x = x0; x < x1; x++) { hist[data[row + x]]++; n++; }
+        }
+        const [lvl, sig] = clippedStats(hist, n);
+        bkgGrid[gy * nx + gx] = lvl;
+        rmsGrid[gy * nx + gx] = sig;
+      }
+    }
+
+    bkgGrid = medianFilterGrid(bkgGrid, nx, ny, meshFilter);
+    rmsGrid = medianFilterGrid(rmsGrid, nx, ny, meshFilter);
+
+    const sorted = Array.from(rmsGrid).sort((a, b) => a - b);
+    const medRms = sorted[sorted.length >> 1];
+
+    // SExtractor interpolates the mesh with a bicubic spline; cv.resize's
+    // bicubic is a close enough stand-in (and degrades to bilinear when the
+    // mesh is too small for a cubic stencil).
+    const interp = (nx >= 4 && ny >= 4) ? cv.INTER_CUBIC : cv.INTER_LINEAR;
+    const small = new cv.Mat(ny, nx, cv.CV_32F);
+    const bkg = new cv.Mat(), rms = new cv.Mat();
+    try {
+      small.data32F.set(bkgGrid);
+      cv.resize(small, bkg, new cv.Size(cols, rows), 0, 0, interp);
+      small.data32F.set(rmsGrid);
+      cv.resize(small, rms, new cv.Size(cols, rows), 0, 0, interp);
+    } finally {
+      small.delete();
+    }
+    return { bkg, rms, medRms, nx, ny };
+  }
+
+  // Background modelling is the one expensive step here and depends only on
+  // the mesh settings, so keep the last one rather than redoing it on every
+  // nudge of the threshold slider.
+  function getBackground(src8, boxSize, meshFilter) {
+    const key = `${boxSize}|${meshFilter}|${src8.cols}x${src8.rows}`;
+    if (bkgCache && bkgCache.key === key) return bkgCache;
+    clearBkgCache();
+    bkgCache = estimateBackground(src8, boxSize, meshFilter);
+    bkgCache.key = key;
+    return bkgCache;
+  }
+
+  function clearBkgCache() {
+    if (bkgCache) {
+      bkgCache.bkg.delete();
+      bkgCache.rms.delete();
+      bkgCache = null;
+    }
+  }
+
+  // OpenCV's small_gaussian_tab: for ksize <= 7 with sigma left automatic,
+  // GaussianBlur uses these fixed kernels instead of the analytic formula.
+  const SMALL_GAUSS = {
+    1: [1],
+    3: [0.25, 0.5, 0.25],
+    5: [0.0625, 0.25, 0.375, 0.25, 0.0625],
+    7: [0.03125, 0.109375, 0.21875, 0.28125, 0.21875, 0.109375, 0.03125],
+  };
+
+  // Factor by which convolution with OpenCV's ksize x ksize Gaussian shrinks
+  // the standard deviation of white pixel noise. The 2D kernel is separable,
+  // K_ij = k_i*k_j, so sum(K^2) = (sum k^2)^2 and the noise factor
+  // sqrt(sum(K^2)) collapses to just sum(k_i^2). Always < 1: that reduction
+  // is precisely the sensitivity a matched filter buys you.
+  function gaussianNoiseFactor(ksize) {
+    let k = SMALL_GAUSS[ksize];
+    if (!k) {
+      const sigma = 0.3 * ((ksize - 1) * 0.5 - 1) + 0.8;
+      const c = -0.5 / (sigma * sigma);
+      const half = (ksize - 1) / 2;
+      k = [];
+      let sum = 0;
+      for (let i = 0; i < ksize; i++) {
+        const x = i - half, v = Math.exp(c * x * x);
+        k.push(v); sum += v;
+      }
+      for (let i = 0; i < ksize; i++) k[i] /= sum;
+    }
+    let s = 0;
+    for (let i = 0; i < ksize; i++) s += k[i] * k[i];
+    return s;
+  }
+
+  // Renders the background model and the significance (S/N) map for the two
+  // diagnostic view tabs. Both are cheap 8-bit copies so the canvas can be
+  // redrawn without re-running any of the above.
+  function buildDiagnostics(bkgMat, convMat, threshMat, nsig) {
+    if (diagBkg) { diagBkg.delete(); diagBkg = null; }
+    if (diagSnr) { diagSnr.delete(); diagSnr = null; }
+
+    diagBkg = new cv.Mat();
+    const mm = cv.minMaxLoc(bkgMat);
+    const span = Math.max(mm.maxVal - mm.minVal, 1e-6);
+    bkgMat.convertTo(diagBkg, cv.CV_8U, 255 / span, -mm.minVal * 255 / span);
+
+    // Significance = filtered signal / (per-pixel threshold / N), i.e. the
+    // number of sigmas each pixel sits above its local background. Scaled so
+    // mid-grey is exactly the current cut: anything brighter than mid-grey
+    // is what ends up in the mask.
+    const snr = new cv.Mat();
+    try {
+      cv.divide(convMat, threshMat, snr, nsig);   // -> sigmas above background
+      diagSnr = new cv.Mat();
+      snr.convertTo(diagSnr, cv.CV_8U, 127.5 / Math.max(nsig, 0.1), 0);
+    } finally {
+      snr.delete();
+    }
+  }
+
   function runSegment() {
     if (!originalMat) return;
     const t0 = performance.now();
     const p = collectParams();
 
-    let gray, stretched, work, mask, artifactMask, notArtifact, borderMask, kernelClose, kernelOpen, filledMask, splitMask, contours, hierarchy;
+    let gray, stretched, work, signal, conv, threshMap, mask, artifactMask, notArtifact, borderMask, kernelClose, kernelOpen, filledMask, splitMask, contours, hierarchy;
     try {
       gray = new cv.Mat();
       cv.cvtColor(originalMat, gray, cv.COLOR_RGBA2GRAY);
 
-      // 1. Smoothing first: contrast stretch, then Gaussian blur. Both
-      //    happen on the raw grayscale image, BEFORE thresholding, so noise
-      //    and grain are suppressed before we ever decide what's foreground.
+      // 1. Contrast stretch on the raw grayscale image. Smoothing follows in
+      //    step 2, still BEFORE any thresholding, so noise and grain are
+      //    suppressed before we ever decide what counts as foreground. Which
+      //    smoothing happens depends on the method: Otsu blurs the 8-bit
+      //    image, the sigma method convolves the float background-subtracted
+      //    image (see below).
       stretched = new cv.Mat();
       if (p.auto_stretch) {
         const [lo, hi] = computePercentiles(gray, 1, 99.5);
@@ -1871,27 +2176,77 @@ X.B(E,Y);return E}return J}())
         gray.copyTo(stretched);
       }
 
-      work = new cv.Mat();
-      if (p.blur_ksize > 0) {
-        const k = odd(p.blur_ksize);
-        cv.GaussianBlur(stretched, work, new cv.Size(k, k), 0, 0, cv.BORDER_DEFAULT);
-      } else {
-        stretched.copyTo(work);
-      }
-
-      // 2. Thresholding, on the smoothed image from step 1.
       mask = new cv.Mat();
-      const baseType = p.invert ? cv.THRESH_BINARY_INV : cv.THRESH_BINARY;
-      // Always compute Otsu's automatic threshold first as a sane baseline,
-      // then, if the user nudged the "Sensitivity" slider, redo the
-      // thresholding at otsu ± offset (clamped to a valid 0-255 range).
-      // Sign is flipped depending on invert mode so that "right = select
-      // more" holds true regardless of whether vessels are dark or light.
-      const otsuVal = cv.threshold(work, mask, 0, 255, baseType + cv.THRESH_OTSU);
-      if (p.thresh_offset) {
-        const signedOffset = p.invert ? p.thresh_offset : -p.thresh_offset;
-        const finalThresh = Math.min(255, Math.max(0, otsuVal + signedOffset));
-        cv.threshold(work, mask, finalThresh, 255, baseType);
+
+      if (p.method === "sigma") {
+        // ---- 2a. N-sigma-over-background detection (SExtractor / SEP) ----
+        //
+        // Model the local background and local pixel noise, subtract the
+        // background, convolve with the same Gaussian the Smoothing panel
+        // sets, then keep every pixel more than N sigma above zero. Because
+        // the cut is pinned to the noise rather than re-derived from the
+        // histogram, convolution is a genuine detection filter here: it
+        // leaves an extended vessel's amplitude alone while shrinking the
+        // noise by gaussianNoiseFactor(k), so faint vessels rise across the
+        // threshold instead of merely acquiring rounder contours.
+        const bg = getBackground(stretched, p.bkg_box, p.bkg_mesh_filter);
+
+        // Work in float from here: background-subtracted data is signed, and
+        // the excesses we care about are often well under one 8-bit DN.
+        signal = new cv.Mat();
+        stretched.convertTo(signal, cv.CV_32F);
+        if (p.invert) cv.subtract(bg.bkg, signal, signal);   // vessels darker than background
+        else cv.subtract(signal, bg.bkg, signal);
+
+        conv = new cv.Mat();
+        let knorm = 1;
+        if (p.blur_ksize > 0) {
+          const k = odd(p.blur_ksize);
+          // BORDER_REPLICATE rather than the default reflect: it does not
+          // mirror a bright edge feature back into the frame.
+          cv.GaussianBlur(signal, conv, new cv.Size(k, k), 0, 0, cv.BORDER_REPLICATE);
+          knorm = gaussianNoiseFactor(k);
+        } else {
+          signal.copyTo(conv);
+        }
+
+        // Per-pixel threshold map. With matched-filter scaling the noise
+        // reduction from the convolution is credited back (a true N sigma of
+        // the filtered image); without it the threshold stays in units of the
+        // unfiltered background RMS, which is SExtractor's own convention and
+        // is the more conservative of the two.
+        const scale = p.nsigma * (p.matched ? knorm : 1);
+        threshMap = new cv.Mat();
+        bg.rms.convertTo(threshMap, cv.CV_32F, scale);
+        cv.compare(conv, threshMap, mask, cv.CMP_GT);
+
+        buildDiagnostics(bg.bkg, conv, threshMap, p.nsigma);
+        bkgReadout.innerHTML =
+          `&sigma;<sub>bkg</sub> &asymp; ${bg.medRms.toFixed(2)} DN &middot; mesh ${bg.nx}&times;${bg.ny}<br>` +
+          `filter gain ${(1 / knorm).toFixed(2)}&times; &middot; cut &asymp; ` +
+          `${(bg.medRms * scale).toFixed(2)} DN above local background`;
+      } else {
+        // ---- 2b. Otsu: one global intensity cut ----
+        work = new cv.Mat();
+        if (p.blur_ksize > 0) {
+          const k = odd(p.blur_ksize);
+          cv.GaussianBlur(stretched, work, new cv.Size(k, k), 0, 0, cv.BORDER_DEFAULT);
+        } else {
+          stretched.copyTo(work);
+        }
+
+        const baseType = p.invert ? cv.THRESH_BINARY_INV : cv.THRESH_BINARY;
+        // Always compute Otsu's automatic threshold first as a sane baseline,
+        // then, if the user nudged the "Sensitivity" slider, redo the
+        // thresholding at otsu ± offset (clamped to a valid 0-255 range).
+        // Sign is flipped depending on invert mode so that "right = select
+        // more" holds true regardless of whether vessels are dark or light.
+        const otsuVal = cv.threshold(work, mask, 0, 255, baseType + cv.THRESH_OTSU);
+        if (p.thresh_offset) {
+          const signedOffset = p.invert ? p.thresh_offset : -p.thresh_offset;
+          const finalThresh = Math.min(255, Math.max(0, otsuVal + signedOffset));
+          cv.threshold(work, mask, finalThresh, 255, baseType);
+        }
       }
 
       // 3. Exclude hard-saturated pixels (value >= 253) in the ORIGINAL image
@@ -1979,7 +2334,7 @@ X.B(E,Y);return E}return J}())
       console.error(err);
       alert("Segmentation error: " + (err.message || err));
     } finally {
-      [gray, stretched, work, mask, artifactMask, notArtifact, borderMask, kernelClose, kernelOpen, filledMask, splitMask, contours, hierarchy].forEach((m) => {
+      [gray, stretched, work, signal, conv, threshMap, mask, artifactMask, notArtifact, borderMask, kernelClose, kernelOpen, filledMask, splitMask, contours, hierarchy].forEach((m) => {
         if (m && typeof m.delete === "function") m.delete();
       });
       loadingOverlay.classList.add("hidden");
@@ -2041,6 +2396,10 @@ X.B(E,Y);return E}return J}())
     viewWrap.classList.remove("hidden");
     viewCanvas.width = originalMat.cols;
     viewCanvas.height = originalMat.rows;
+    // Diagnostic views replace the whole canvas and carry no contour overlay.
+    if (currentView === "background" && diagBkg) { cv.imshow(viewCanvas, diagBkg); return; }
+    if (currentView === "snr" && diagSnr) { cv.imshow(viewCanvas, diagSnr); return; }
+
     const ctx = viewCanvas.getContext("2d");
     ctx.clearRect(0, 0, viewCanvas.width, viewCanvas.height);
     ctx.drawImage(sourceCanvas, 0, 0);
@@ -2080,13 +2439,14 @@ X.B(E,Y);return E}return J}())
 
   // ---------- view tabs ----------
 
+  function selectView(name) {
+    currentView = name;
+    viewTabs.forEach((t) => t.classList.toggle("active", t.dataset.view === name));
+    renderCanvas();
+  }
+
   viewTabs.forEach((tab) => {
-    tab.addEventListener("click", () => {
-      viewTabs.forEach((t) => t.classList.remove("active"));
-      tab.classList.add("active");
-      currentView = tab.dataset.view;
-      renderCanvas();
-    });
+    tab.addEventListener("click", () => selectView(tab.dataset.view));
   });
 
   // ---------- manual editing ----------
